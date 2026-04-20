@@ -3,7 +3,7 @@ module.exports = {
     {
       name: "Main backend",
       script: "web/index.js",
-      instances: "max",
+      instances: "1",
       exec_mode: "fork",
     },
   ],
