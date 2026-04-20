@@ -5,6 +5,7 @@ module.exports = {
       script: "web/index.js",
       instances: "1",
       exec_mode: "fork",
+      env_file: "web/.env",
     },
   ],
 };
