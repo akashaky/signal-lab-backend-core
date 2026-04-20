@@ -5,9 +5,12 @@ import UserController from "./routes/user/user.controller.js";
 import cors from "cors";
 import dotenv from "dotenv";
 
-dotenv.config();
+import { fileURLToPath } from "url";
+import { dirname, join } from "path";
+const __dirname = dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: join(__dirname, ".env") });
 
-const PORT = 3000;
+const PORT = 3003;
 const app = express();
 
 // CORS must be configured BEFORE other23ed-2409-40d0-103e-7856-fdf0-4dc7-2ca0-b321 middleware
