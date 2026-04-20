@@ -1,0 +1,11 @@
+application_url = "https://dev-api.revsignallab.com"
+
+redirect_urls = [
+  "https://dev-api.revsignallab.com/api/store/auth",
+  "https://dev-api.revsignallab.com/api/store/auth/user"
+]
+
+roles = ["backend"]
+
+[commands]
+dev = "npm run dev"
