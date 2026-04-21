@@ -370,61 +370,11 @@ async function registerWebhooks(shop, accessToken) {
 }
 
 async function triggerBulkOperation(shop, accessToken) {
-  const twelveMonthsAgo = new Date();
-  twelveMonthsAgo.setMonth(twelveMonthsAgo.getMonth() - 12);
-  const since = twelveMonthsAgo.toISOString();
-
   const mutation = `
     mutation {
       bulkOperationRunQuery(
         query: """
         {
-          orders(query: "created_at:>${since}") {
-            edges {
-              node {
-                id
-                name
-                email
-                totalPriceSet { shopMoney { amount currencyCode } }
-                createdAt
-                updatedAt
-                displayFinancialStatus
-                displayFulfillmentStatus
-                customer { id }
-                lineItems {
-                  edges {
-                    node {
-                      id
-                      title
-                      quantity
-                      originalUnitPriceSet { shopMoney { amount currencyCode } }
-                    }
-                  }
-                }
-                refunds {
-                  id
-                  createdAt
-                  totalRefundedSet { shopMoney { amount currencyCode } }
-                }
-              }
-            }
-          }
-          customers {
-            edges {
-              node {
-                id
-                email
-                firstName
-                lastName
-                createdAt
-                updatedAt
-                numberOfOrders
-                amountSpent { amount currencyCode }
-                phone
-                tags
-              }
-            }
-          }
           products {
             edges {
               node {
