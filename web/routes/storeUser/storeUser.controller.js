@@ -329,18 +329,11 @@ async function insertAccessToken({
 }
 
 const WEBHOOK_TOPICS = [
-  "orders/create",
-  "orders/updated",
   "products/create",
   "products/update",
   "products/delete",
-  "customers/create",
-  "customers/update",
-  "customers/delete",
-  "refunds/create",
   "bulk_operations/finish",
   "app/uninstalled",
-  "shop/redact",
 ];
 
 async function registerWebhooks(shop, accessToken) {
@@ -425,8 +418,8 @@ async function triggerBulkOperation(shop, accessToken) {
                 lastName
                 createdAt
                 updatedAt
-                ordersCount
-                totalSpentV2 { amount currencyCode }
+                numberOfOrders
+                amountSpent { amount currencyCode }
                 phone
                 tags
               }
