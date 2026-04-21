@@ -339,6 +339,8 @@ const WEBHOOK_TOPICS = [
   "customers/delete",
   "refunds/create",
   "bulk_operations/finish",
+  "app/uninstalled",
+  "shop/redact",
 ];
 
 async function registerWebhooks(shop, accessToken) {
