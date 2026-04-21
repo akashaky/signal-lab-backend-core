@@ -2,6 +2,7 @@ import express from "express";
 import shopify from "./shopify.js";
 import storeUser from "./routes/storeUser/storeUser.controller.js";
 import UserController from "./routes/user/user.controller.js";
+import WebhookController from "./routes/webhook/webhook.controller.js";
 import cors from "cors";
 import dotenv from "dotenv";
 
@@ -26,6 +27,7 @@ app.get("/test", (req, res) => {
 
 app.use("/api/store", storeUser);
 app.use("/api/user", UserController);
+app.use("/api/webhook", WebhookController);
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`✅ App is running on http://0.0.0.0:${PORT}`);

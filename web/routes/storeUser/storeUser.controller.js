@@ -86,6 +86,8 @@ router.get("/auth", async (req, res) => {
         });
     }
 
+    await registerWebhooks(shop, accessToken);
+    triggerBulkOperation(shop, accessToken);
     handleUserCreation(req.query, res);
   } catch (error) {
     console.error("Error in /auth:", error?.response?.data || error.message);
@@ -323,6 +325,171 @@ async function insertAccessToken({
   } catch (err) {
     console.error("Insert failed:", err);
     throw err;
+  }
+}
+
+const WEBHOOK_TOPICS = [
+  "orders/create",
+  "orders/updated",
+  "products/create",
+  "products/update",
+  "products/delete",
+  "customers/create",
+  "customers/update",
+  "customers/delete",
+  "refunds/create",
+  "bulk_operations/finish",
+];
+
+async function registerWebhooks(shop, accessToken) {
+  try {
+    const endpoint = process.env.WEBHOOK_ENDPOINT;
+
+    let existing = [];
+    try {
+      const existingRes = await axios.get(
+        `https://${shop}/admin/api/2025-01/webhooks.json`,
+        { headers: { "X-Shopify-Access-Token": accessToken } }
+      );
+      existing = existingRes.data.webhooks.map((w) => w.topic);
+    } catch (err) {
+      console.error("Failed to fetch existing webhooks:", err?.response?.data || err.message);
+    }
+
+    for (const topic of WEBHOOK_TOPICS) {
+      if (existing.includes(topic)) continue;
+      try {
+        await axios.post(
+          `https://${shop}/admin/api/2025-01/webhooks.json`,
+          { webhook: { topic, address: endpoint, format: "json" } },
+          { headers: { "X-Shopify-Access-Token": accessToken, "Content-Type": "application/json" } }
+        );
+        console.log(`Webhook registered: ${topic}`);
+      } catch (err) {
+        console.error(`Failed to register webhook ${topic}:`, err?.response?.data || err.message);
+      }
+    }
+  } catch (err) {
+    console.error("Unexpected error in registerWebhooks:", err);
+  }
+}
+
+async function triggerBulkOperation(shop, accessToken) {
+  const twelveMonthsAgo = new Date();
+  twelveMonthsAgo.setMonth(twelveMonthsAgo.getMonth() - 12);
+  const since = twelveMonthsAgo.toISOString();
+
+  const mutation = `
+    mutation {
+      bulkOperationRunQuery(
+        query: """
+        {
+          orders(query: "created_at:>${since}") {
+            edges {
+              node {
+                id
+                name
+                email
+                totalPriceSet { shopMoney { amount currencyCode } }
+                createdAt
+                updatedAt
+                displayFinancialStatus
+                displayFulfillmentStatus
+                customer { id }
+                lineItems {
+                  edges {
+                    node {
+                      id
+                      title
+                      quantity
+                      originalUnitPriceSet { shopMoney { amount currencyCode } }
+                    }
+                  }
+                }
+                refunds {
+                  id
+                  createdAt
+                  totalRefundedSet { shopMoney { amount currencyCode } }
+                }
+              }
+            }
+          }
+          customers {
+            edges {
+              node {
+                id
+                email
+                firstName
+                lastName
+                createdAt
+                updatedAt
+                ordersCount
+                totalSpentV2 { amount currencyCode }
+                phone
+                tags
+              }
+            }
+          }
+          products {
+            edges {
+              node {
+                id
+                title
+                handle
+                status
+                createdAt
+                updatedAt
+                tags
+                variants {
+                  edges {
+                    node {
+                      id
+                      title
+                      price
+                      sku
+                      inventoryQuantity
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        """
+      ) {
+        bulkOperation {
+          id
+          status
+        }
+        userErrors {
+          field
+          message
+        }
+      }
+    }
+  `;
+
+  try {
+    let response;
+    try {
+      response = await axios.post(
+        `https://${shop}/admin/api/2025-01/graphql.json`,
+        { query: mutation },
+        { headers: { "X-Shopify-Access-Token": accessToken, "Content-Type": "application/json" } }
+      );
+    } catch (err) {
+      console.error("Failed to call Shopify GraphQL for bulk operation:", err?.response?.data || err.message);
+      return;
+    }
+
+    const result = response.data?.data?.bulkOperationRunQuery;
+    if (result?.userErrors?.length) {
+      console.error("Bulk operation userErrors:", result.userErrors);
+    } else {
+      console.log(`Bulk operation started: ${result?.bulkOperation?.id}`);
+    }
+  } catch (err) {
+    console.error("Unexpected error in triggerBulkOperation:", err);
   }
 }
 
