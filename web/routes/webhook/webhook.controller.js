@@ -39,6 +39,12 @@ router.post("/shopify", express.raw({ type: "application/json" }), async (req, r
       return res.status(200).send("OK");
     }
 
+    // Discard products/update and orders/updated events
+    if (topic === "products/update" || topic === "orders/updated") {
+      console.log(`Discarding ${topic} event for shop: ${shop}`);
+      return res.status(200).send("OK");
+    }
+
     try {
       await sendToQueue({ topic, shop, payload });
     } catch (err) {

@@ -66,6 +66,8 @@ router.get("/auth", async (req, res) => {
     } else {
       const [id] = await KnexClient("shopifyStore").insert(mappedShop);
       storeId = id;
+      await registerWebhooks(shop, accessToken);
+      triggerBulkOperation(shop, accessToken, storeId);
     }
 
     const accessTokenData = await getAccessTokenByStoreId(storeId);
@@ -86,8 +88,6 @@ router.get("/auth", async (req, res) => {
         });
     }
 
-    await registerWebhooks(shop, accessToken);
-    triggerBulkOperation(shop, accessToken, storeId);
     handleUserCreation(req.query, res);
   } catch (error) {
     console.error("Error in /auth:", error?.response?.data || error.message);
