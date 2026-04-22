@@ -184,7 +184,8 @@ router.get("/auth/user", async (req, res) => {
       expiresIn: "30d",
     });
 
-    res.redirect(`https://admin-ui-co.netlify.app/?token=${token}`);
+    const shopName = shop.split(".myshopify.com")[0];
+    res.redirect(`https://${shopName}.app.revsignallab.com/?token=${token}`);
   } catch (error) {
     console.error(
       "Error in /auth/user:",
