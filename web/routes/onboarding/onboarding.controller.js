@@ -108,9 +108,6 @@ router.get("/status", validateJWT, async (req, res) => {
         ? {
             cogsPercent: parseFloat(settings.cogsPercent),
             avgShipping: parseFloat(settings.avgShipping),
-            processingFee: settings.processingFee,
-            customFeePercent: settings.customFeePercent != null ? parseFloat(settings.customFeePercent) : null,
-            fixedFeeCents: settings.fixedFeeCents,
             dailyAdSpend: settings.dailyAdSpend != null ? parseFloat(settings.dailyAdSpend) : null,
           }
         : null,
@@ -130,7 +127,7 @@ router.get("/status", validateJWT, async (req, res) => {
 router.post("/settings", validateJWT, async (req, res) => {
   try {
     const { shop } = req.user;
-    const { cogsPercent, avgShipping, processingFee, customFeePercent, fixedFeeCents, dailyAdSpend } = req.body;
+    const { cogsPercent, avgShipping, dailyAdSpend } = req.body;
 
     const store = await KnexClient("shopifyStore")
       .where("myshopifyDomain", shop)
@@ -143,9 +140,6 @@ router.post("/settings", validateJWT, async (req, res) => {
     const data = {
       cogsPercent: parseFloat(cogsPercent) || 30,
       avgShipping: parseFloat(avgShipping) || 4.5,
-      processingFee: processingFee || "shopify_standard",
-      customFeePercent: customFeePercent != null && customFeePercent !== "" ? parseFloat(customFeePercent) : null,
-      fixedFeeCents: parseInt(fixedFeeCents) || 30,
       dailyAdSpend: dailyAdSpend != null && dailyAdSpend !== "" ? parseFloat(dailyAdSpend) : null,
     };
 
@@ -162,6 +156,87 @@ router.post("/settings", validateJWT, async (req, res) => {
     return res.json({ success: true });
   } catch (err) {
     console.error("Error in POST /onboarding/settings:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// GET /api/onboarding/summary
+// Returns real last-30-day P&L metrics calculated from synced order/refund data
+router.get("/summary", validateJWT, async (req, res) => {
+  try {
+    const { shop } = req.user;
+
+    const store = await KnexClient("shopifyStore")
+      .where("myshopifyDomain", shop)
+      .first();
+    if (!store) return res.status(404).json({ error: "Store not found" });
+
+    const settings = await KnexClient("storeSettings")
+      .where("storeId", store.id)
+      .first();
+
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+    // Gross revenue + order count — sum MAX(totalPrice) per distinct order
+    // totalPrice is order-level but stored on every line item row
+    const [revenueRows] = await KnexClient.raw(
+      `SELECT
+         COALESCE(SUM(order_total), 0) AS grossRevenue,
+         COUNT(*)                       AS orderCount
+       FROM (
+         SELECT orderShopifyId,
+                MAX(CAST(totalPrice AS DECIMAL(12,2))) AS order_total
+         FROM   shopifyOrderLineItems
+         WHERE  storeId      = ?
+           AND  orderCreatedAt >= ?
+           AND  cancelledAt  IS NULL
+           AND  (financialStatus IS NULL OR financialStatus != 'voided')
+         GROUP BY orderShopifyId
+       ) AS orders`,
+      [store.id, thirtyDaysAgo]
+    );
+
+    const grossRevenue = parseFloat(revenueRows[0]?.grossRevenue ?? 0);
+    const orderCount   = parseInt(revenueRows[0]?.orderCount   ?? 0);
+
+    // Total refunds processed in the last 30 days
+    const [refundRows] = await KnexClient.raw(
+      `SELECT COALESCE(SUM(CAST(totalRefunded AS DECIMAL(12,2))), 0) AS totalRefunds
+       FROM   shopifyRefunds
+       WHERE  storeId     = ?
+         AND  processedAt >= ?`,
+      [store.id, thirtyDaysAgo]
+    );
+
+    const refunds    = parseFloat(refundRows[0]?.totalRefunds ?? 0);
+    const netRevenue = grossRevenue - refunds;
+
+    const cogsPct     = settings ? parseFloat(settings.cogsPercent) / 100 : 0.30;
+    const avgShipping = settings ? parseFloat(settings.avgShipping)       : 4.50;
+    const dailyAd     = settings ? parseFloat(settings.dailyAdSpend || 0) : 0;
+
+    const cogsAmount     = netRevenue * cogsPct;
+    const shippingAmount = orderCount * avgShipping;
+    const adSpendAmount  = dailyAd * 30;
+    const netProfit      = netRevenue - cogsAmount - shippingAmount - adSpendAmount;
+    const margin         = grossRevenue > 0
+      ? ((netProfit / grossRevenue) * 100).toFixed(1)
+      : "0.0";
+
+    return res.json({
+      grossRevenue,
+      refunds,
+      orderCount,
+      netRevenue,
+      cogsAmount,
+      shippingAmount,
+      adSpendAmount,
+      netProfit,
+      margin,
+    });
+  } catch (err) {
+    console.error("Error in GET /onboarding/summary:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 });
