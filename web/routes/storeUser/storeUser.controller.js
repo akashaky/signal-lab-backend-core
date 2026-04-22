@@ -184,7 +184,7 @@ router.get("/auth/user", async (req, res) => {
       expiresIn: "30d",
     });
 
-    res.redirect(`https://${process.NODE_ENV !== "production" ? }.app/?token=${token}`);
+    res.redirect(`https://admin-ui-co.netlify.app/?token=${token}`);
   } catch (error) {
     console.error(
       "Error in /auth/user:",
@@ -482,6 +482,30 @@ const BULK_OPERATION_QUERIES = {
       }
     }
   `,
+  REFUNDS_IMPORT: () => {
+    const date = new Date();
+    date.setMonth(date.getMonth() - 12);
+    const since = date.toISOString().split("T")[0];
+    return `
+      {
+        orders(query: "created_at:>${since}") {
+          edges {
+            node {
+              id
+  const queryEntry = BULK_OPERATION_QUERIES[type];
+  if (!queryEntry) {
+                note
+                processedAt
+                createdAt
+  const innerQuery = typeof queryEntry === "function" ? queryEntry() : queryEntry;
+                totalRefundedSet { shopMoney { amount currencyCode } }
+              }
+            }
+          }
+        }
+      }
+    `;
+  },
 };
 
 async function triggerBulkOperation(shop, accessToken, storeId) {
