@@ -22,27 +22,27 @@ router.get("/", validateJWT, async (req, res) => {
     const settings = await KnexClient("storeSettings").where("storeId", storeId).first();
     const defaultCogsPercent = settings ? parseFloat(settings.cogsPercent) : 30;
 
-    const variants = await KnexClient("productVariants")
-      .where("productVariants.storeId", storeId)
-      .leftJoin("productVariantCogs", function () {
-        this.on("productVariantCogs.variantShopifyId", "=", "productVariants.variantShopifyId")
-          .andOn("productVariantCogs.storeId", "=", "productVariants.storeId");
-      })
-      .select(
-        "productVariants.id",
-        "productVariants.variantShopifyId",
-        "productVariants.productShopifyId",
-        "productVariants.productTitle",
-        "productVariants.productHandle",
-        "productVariants.productStatus",
-        "productVariants.variantTitle",
-        "productVariants.price",
-        "productVariants.sku",
-        "productVariants.inventoryQuantity",
-        "productVariantCogs.cogsPercent as cogsOverride"
-      )
-      .orderBy("productVariants.productTitle")
-      .orderBy("productVariants.price");
+    const [variants] = await KnexClient.raw(
+      `SELECT
+         pv.id,
+         pv.variantShopifyId,
+         pv.productShopifyId,
+         pv.productTitle,
+         pv.productHandle,
+         pv.productStatus,
+         pv.variantTitle,
+         pv.price,
+         pv.sku,
+         pv.inventoryQuantity,
+         vc.cogsPercent AS cogsOverride
+       FROM productVariants pv
+       LEFT JOIN productVariantCogs vc
+         ON vc.variantShopifyId COLLATE utf8mb4_unicode_ci = pv.variantShopifyId
+        AND vc.storeId = pv.storeId
+       WHERE pv.storeId = ?
+       ORDER BY pv.productTitle ASC, pv.price ASC`,
+      [storeId]
+    );
 
     // Group variants by product
     const productMap = new Map();
