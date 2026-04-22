@@ -87,7 +87,7 @@ router.get("/auth", async (req, res) => {
     }
 
     await registerWebhooks(shop, accessToken);
-    triggerBulkOperation(shop, accessToken);
+    triggerBulkOperation(shop, accessToken, storeId);
     handleUserCreation(req.query, res);
   } catch (error) {
     console.error("Error in /auth:", error?.response?.data || error.message);
@@ -369,72 +369,151 @@ async function registerWebhooks(shop, accessToken) {
   }
 }
 
-async function triggerBulkOperation(shop, accessToken) {
-  const mutation = `
-    mutation {
-      bulkOperationRunQuery(
-        query: """
-        {
-          products {
-            edges {
-              node {
-                id
-                title
-                handle
-                status
-                createdAt
-                updatedAt
-                tags
-                variants {
-                  edges {
-                    node {
-                      id
-                      title
-                      price
-                      sku
-                      inventoryQuantity
-                    }
-                  }
+const BULK_OPERATION_QUERIES = {
+  PRODUCTS_IMPORT: `
+    {
+      products {
+        edges {
+          node {
+            id
+            title
+            handle
+            status
+            createdAt
+            updatedAt
+            tags
+            variants {
+              edges {
+                node {
+                  id
+                  title
+                  price
+                  sku
+                  inventoryQuantity
                 }
               }
             }
           }
         }
-        """
-      ) {
-        bulkOperation {
-          id
-          status
-        }
-        userErrors {
-          field
-          message
+      }
+    }
+  `,
+  CUSTOMERS_IMPORT: `
+    {
+      customers {
+        edges {
+          node {
+            id
+            email
+            firstName
+            lastName
+            phone
+            numberOfOrders
+            amountSpent {
+              amount
+              currencyCode
+            }
+            state
+            taxExempt
+            tags
+            verifiedEmail
+            createdAt
+            updatedAt
+          }
         }
       }
     }
-  `;
+  `,
+  ORDERS_IMPORT: `
+    {
+      orders {
+        edges {
+          node {
+            id
+            name
+            email
+            phone
+            totalPriceSet { shopMoney { amount currencyCode } }
+            subtotalPriceSet { shopMoney { amount } }
+            totalTaxSet { shopMoney { amount } }
+            displayFinancialStatus
+            displayFulfillmentStatus
+            processedAt
+            cancelledAt
+            cancelReason
+            createdAt
+            updatedAt
+            customer { id }
+            lineItems {
+              edges {
+                node {
+                  id
+                  title
+                  quantity
+                  originalUnitPriceSet { shopMoney { amount } }
+                  variant { id sku }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  `,
+};
 
-  try {
-    let response;
+async function triggerBulkOperation(shop, accessToken, storeId) {
+  for (const [type, innerQuery] of Object.entries(BULK_OPERATION_QUERIES)) {
+    const mutation = `
+      mutation {
+        bulkOperationRunQuery(
+          query: """
+          ${innerQuery}
+          """
+        ) {
+          bulkOperation {
+            id
+            status
+          }
+          userErrors {
+            field
+            message
+          }
+        }
+      }
+    `;
+
     try {
-      response = await axios.post(
-        `https://${shop}/admin/api/2025-01/graphql.json`,
-        { query: mutation },
-        { headers: { "X-Shopify-Access-Token": accessToken, "Content-Type": "application/json" } }
-      );
-    } catch (err) {
-      console.error("Failed to call Shopify GraphQL for bulk operation:", err?.response?.data || err.message);
-      return;
-    }
+      let response;
+      try {
+        response = await axios.post(
+          `https://${shop}/admin/api/2025-01/graphql.json`,
+          { query: mutation },
+          { headers: { "X-Shopify-Access-Token": accessToken, "Content-Type": "application/json" } }
+        );
+      } catch (err) {
+        console.error(`Failed to call Shopify GraphQL for bulk operation (${type}):`, err?.response?.data || err.message);
+        continue;
+      }
 
-    const result = response.data?.data?.bulkOperationRunQuery;
-    if (result?.userErrors?.length) {
-      console.error("Bulk operation userErrors:", result.userErrors);
-    } else {
-      console.log(`Bulk operation started: ${result?.bulkOperation?.id}`);
+      const result = response.data?.data?.bulkOperationRunQuery;
+      if (result?.userErrors?.length) {
+        console.error(`Bulk operation userErrors (${type}):`, result.userErrors);
+      } else {
+        const bulkOperationShopifyId = result?.bulkOperation?.id;
+        console.log(`Bulk operation started (${type}): ${bulkOperationShopifyId}`);
+        if (bulkOperationShopifyId && storeId) {
+          await KnexClient("shopifyBulkOperation").insert({
+            bulkOperationShopifyId,
+            storeId,
+            type,
+            status: "CREATED",
+          });
+        }
+      }
+    } catch (err) {
+      console.error(`Unexpected error in triggerBulkOperation (${type}):`, err);
     }
-  } catch (err) {
-    console.error("Unexpected error in triggerBulkOperation:", err);
   }
 }
 
