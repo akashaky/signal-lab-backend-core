@@ -1,6 +1,7 @@
 import express from "express";
 import crypto from "crypto";
 import { sendToQueue } from "../../lib/sqs.js";
+import KnexClient from "../../knex.js";
 
 const router = express.Router();
 
@@ -28,6 +29,14 @@ router.post("/shopify", express.raw({ type: "application/json" }), async (req, r
     } catch (err) {
       console.error("Failed to parse webhook body:", err);
       return res.status(400).send("Invalid JSON");
+    }
+
+    if (topic === "app/uninstalled") {
+      await KnexClient("shopifyStore")
+        .where("myshopifyDomain", shop)
+        .update({ isUninstalled: 1 });
+      console.log(`App uninstalled for shop: ${shop}`);
+      return res.status(200).send("OK");
     }
 
     try {

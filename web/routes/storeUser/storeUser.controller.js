@@ -475,6 +475,29 @@ const BULK_OPERATION_QUERIES = {
       }
     }
   `,
+  REFUNDS_IMPORT: () => {
+    const date = new Date();
+    date.setMonth(date.getMonth() - 12);
+    const since = date.toISOString().split("T")[0];
+    return `
+      {
+        orders(query: "created_at:>${since}") {
+          edges {
+            node {
+              id
+              refunds {
+                id
+                note
+                processedAt
+                createdAt
+                totalRefundedSet { shopMoney { amount currencyCode } }
+              }
+            }
+          }
+        }
+      }
+    `;
+  },
 };
 
 async function triggerBulkOperation(shop, accessToken, storeId) {
@@ -485,11 +508,12 @@ async function triggerBulkOperation(shop, accessToken, storeId) {
 }
 
 export async function triggerSingleBulkOperation(shop, accessToken, storeId, type) {
-  const innerQuery = BULK_OPERATION_QUERIES[type];
-  if (!innerQuery) {
+  const queryEntry = BULK_OPERATION_QUERIES[type];
+  if (!queryEntry) {
     console.error(`Unknown bulk operation type: ${type}`);
     return;
   }
+  const innerQuery = typeof queryEntry === "function" ? queryEntry() : queryEntry;
 
   const mutation = `
     mutation {
