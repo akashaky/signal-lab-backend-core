@@ -13,6 +13,7 @@ router.get("/", validateJWT, async (req, res) => {
 			.where("shopifyUser.shopifyUserId", user.userShopifyId)
 			.select(
 				"shopifyStore.name",
+				"shopifyStore.currency",
 				"shopifyUser.email",
 				"shopifyUser.firstName",
 				"shopifyUser.lastName"
@@ -26,6 +27,7 @@ router.get("/", validateJWT, async (req, res) => {
 				firstName: result.firstName,
 				lastName: result.lastName,
 				storeName: result.name,
+				currency: result.currency || "USD",
 			},
 		});
 	} catch (error) {

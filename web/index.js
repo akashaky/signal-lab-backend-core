@@ -3,8 +3,12 @@ import shopify from "./shopify.js";
 import storeUser from "./routes/storeUser/storeUser.controller.js";
 import UserController from "./routes/user/user.controller.js";
 import WebhookController from "./routes/webhook/webhook.controller.js";
+import OnboardingController from "./routes/onboarding/onboarding.controller.js";
+import BillingController from "./routes/billing/billing.controller.js";
+import ProductsController from "./routes/products/products.controller.js";
 import cors from "cors";
 import dotenv from "dotenv";
+import { runDbSetup } from "./db/setup.js";
 
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
@@ -29,6 +33,11 @@ app.get("/test", (req, res) => {
 
 app.use("/api/store", storeUser);
 app.use("/api/user", UserController);
+app.use("/api/onboarding", OnboardingController);
+app.use("/api/billing", BillingController);
+app.use("/api/products", ProductsController);
+
+runDbSetup();
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`✅ App is running on http://0.0.0.0:${PORT}`);
