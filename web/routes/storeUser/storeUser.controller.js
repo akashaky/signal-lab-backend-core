@@ -329,10 +329,25 @@ async function insertAccessToken({
 }
 
 const WEBHOOK_TOPICS = [
+  // Product events
   "products/create",
   "products/update",
   "products/delete",
+  // Order events
+  "orders/create",
+  "orders/updated",
+  "orders/cancelled",
+  "orders/fulfilled",
+  "orders/paid",
+  // Customer events
+  "customers/create",
+  "customers/update",
+  "customers/delete",
+  // Refund events
+  "refunds/create",
+  // Bulk operations
   "bulk_operations/finish",
+  // App lifecycle
   "app/uninstalled",
 ];
 
@@ -463,58 +478,71 @@ const BULK_OPERATION_QUERIES = {
 };
 
 async function triggerBulkOperation(shop, accessToken, storeId) {
-  for (const [type, innerQuery] of Object.entries(BULK_OPERATION_QUERIES)) {
-    const mutation = `
-      mutation {
-        bulkOperationRunQuery(
-          query: """
-          ${innerQuery}
-          """
-        ) {
-          bulkOperation {
-            id
-            status
-          }
-          userErrors {
-            field
-            message
-          }
+  // Shopify only allows one bulk operation at a time — trigger only the first.
+  // The service chains the next operation after each one finishes.
+  const firstType = Object.keys(BULK_OPERATION_QUERIES)[0];
+  await triggerSingleBulkOperation(shop, accessToken, storeId, firstType);
+}
+
+export async function triggerSingleBulkOperation(shop, accessToken, storeId, type) {
+  const innerQuery = BULK_OPERATION_QUERIES[type];
+  if (!innerQuery) {
+    console.error(`Unknown bulk operation type: ${type}`);
+    return;
+  }
+
+  const mutation = `
+    mutation {
+      bulkOperationRunQuery(
+        query: """
+        ${innerQuery}
+        """
+      ) {
+        bulkOperation {
+          id
+          status
+        }
+        userErrors {
+          field
+          message
         }
       }
-    `;
-
-    try {
-      let response;
-      try {
-        response = await axios.post(
-          `https://${shop}/admin/api/2025-01/graphql.json`,
-          { query: mutation },
-          { headers: { "X-Shopify-Access-Token": accessToken, "Content-Type": "application/json" } }
-        );
-      } catch (err) {
-        console.error(`Failed to call Shopify GraphQL for bulk operation (${type}):`, err?.response?.data || err.message);
-        continue;
-      }
-
-      const result = response.data?.data?.bulkOperationRunQuery;
-      if (result?.userErrors?.length) {
-        console.error(`Bulk operation userErrors (${type}):`, result.userErrors);
-      } else {
-        const bulkOperationShopifyId = result?.bulkOperation?.id;
-        console.log(`Bulk operation started (${type}): ${bulkOperationShopifyId}`);
-        if (bulkOperationShopifyId && storeId) {
-          await KnexClient("shopifyBulkOperation").insert({
-            bulkOperationShopifyId,
-            storeId,
-            type,
-            status: "CREATED",
-          });
-        }
-      }
-    } catch (err) {
-      console.error(`Unexpected error in triggerBulkOperation (${type}):`, err);
     }
+  `;
+
+  try {
+    let response;
+    try {
+      response = await axios.post(
+        `https://${shop}/admin/api/2025-01/graphql.json`,
+        { query: mutation },
+        { headers: { "X-Shopify-Access-Token": accessToken, "Content-Type": "application/json" } }
+      );
+    } catch (err) {
+      console.error(`Failed to call Shopify GraphQL for bulk operation (${type}):`, err?.response?.data || err.message);
+      return;
+    }
+
+    const result = response.data?.data?.bulkOperationRunQuery;
+    if (result?.userErrors?.length) {
+      console.error(`Bulk operation userErrors (${type}):`, result.userErrors);
+    } else {
+      const bulkOperationShopifyId = result?.bulkOperation?.id;
+      console.log(`Bulk operation started (${type}): ${bulkOperationShopifyId}`);
+      if (bulkOperationShopifyId && storeId) {
+        await KnexClient("shopifyBulkOperation").insert({
+          bulkOperationShopifyId,
+          storeId,
+          type,
+          status: "CREATED",
+        });
+      }
+    }
+  } catch (err) {
+    console.error(`Unexpected error in triggerBulkOperation (${type}):`, err);
   }
 }
+
+export { BULK_OPERATION_QUERIES };
 
 export default router;
