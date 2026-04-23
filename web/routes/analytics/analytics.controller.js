@@ -288,6 +288,248 @@ async function queryChartData(storeId, chartStart, chartEnd, chartGranularity, s
   return { chartDates, chartRevenue, chartProfit };
 }
 
+async function queryTopCustomers(storeId) {
+  const [rows] = await KnexClient.raw(
+    `SELECT
+       o.customerShopifyId                                              AS id,
+       COALESCE(c.firstName, '')                                        AS firstName,
+       COALESCE(c.lastName, '')                                         AS lastName,
+       c.email                                                          AS email,
+       SUM(o.order_total)                                               AS totalSpent,
+       COUNT(*)                                                         AS orders,
+       DATE_FORMAT(MIN(o.orderCreatedAt), '%b %d, %Y')                  AS firstOrderDate,
+       DATE_FORMAT(MAX(o.orderCreatedAt), '%b %d, %Y')                  AS lastOrderDate,
+       DATEDIFF(NOW(), MAX(o.orderCreatedAt))                           AS daysSinceLastOrder
+     FROM (
+       SELECT customerShopifyId, orderShopifyId, orderCreatedAt,
+              MAX(CAST(totalPrice AS DECIMAL(12,2))) AS order_total
+       FROM shopifyOrderLineItems
+       WHERE storeId = ?
+         AND customerShopifyId IS NOT NULL
+         AND cancelledAt IS NULL
+         AND (financialStatus IS NULL OR financialStatus NOT IN ('voided'))
+       GROUP BY customerShopifyId, orderShopifyId, orderCreatedAt
+     ) o
+     LEFT JOIN shopifyCustomers c
+       ON c.customerShopifyId = o.customerShopifyId AND c.storeId = ?
+     GROUP BY o.customerShopifyId, c.firstName, c.lastName, c.email
+     ORDER BY totalSpent DESC
+     LIMIT 25`,
+    [storeId, storeId]
+  );
+
+  return rows.map((r) => ({
+    id: r.id,
+    firstName: [r.firstName, r.lastName].filter(Boolean).join(" ") || `Customer ${String(r.id).slice(-6)}`,
+    email: r.email ?? null,
+    totalSpent: parseFloat(r.totalSpent),
+    orders: parseInt(r.orders),
+    firstOrderDate: r.firstOrderDate,
+    lastOrderDate: r.lastOrderDate,
+    daysSinceLastOrder: parseInt(r.daysSinceLastOrder),
+  }));
+}
+
+async function queryCustomerSummary(storeId, start, end, priorStart, priorEnd) {
+  // New vs returning counts for current and prior period
+  const [current, prior] = await Promise.all([
+    queryCustomers(storeId, start, end),
+    queryCustomers(storeId, priorStart, priorEnd),
+  ]);
+
+  // Total distinct customers in period
+  const [[totCur], [totPri]] = await Promise.all([
+    KnexClient.raw(
+      `SELECT COUNT(DISTINCT customerShopifyId) AS total
+       FROM shopifyOrderLineItems
+       WHERE storeId = ? AND orderCreatedAt >= ? AND orderCreatedAt < ?
+         AND customerShopifyId IS NOT NULL AND cancelledAt IS NULL`,
+      [storeId, start, end]
+    ),
+    KnexClient.raw(
+      `SELECT COUNT(DISTINCT customerShopifyId) AS total
+       FROM shopifyOrderLineItems
+       WHERE storeId = ? AND orderCreatedAt >= ? AND orderCreatedAt < ?
+         AND customerShopifyId IS NOT NULL AND cancelledAt IS NULL`,
+      [storeId, priorStart, priorEnd]
+    ),
+  ]);
+
+  const totalCustomers      = parseInt(totCur[0]?.total ?? 0);
+  const totalCustomersPrior = parseInt(totPri[0]?.total ?? 0);
+
+  // Avg LTV (last 12 months) and avg orders per customer
+  const twelveMonthsAgo = new Date();
+  twelveMonthsAgo.setMonth(twelveMonthsAgo.getMonth() - 12);
+
+  const [[ltvRows]] = await Promise.all([
+    KnexClient.raw(
+      `SELECT AVG(cust_total) AS avgLtv, AVG(cust_orders) AS avgOrders
+       FROM (
+         SELECT customerShopifyId,
+                SUM(MAX(CAST(totalPrice AS DECIMAL(12,2)))) AS cust_total,
+                COUNT(DISTINCT orderShopifyId)              AS cust_orders
+         FROM shopifyOrderLineItems
+         WHERE storeId = ? AND orderCreatedAt >= ?
+           AND customerShopifyId IS NOT NULL AND cancelledAt IS NULL
+         GROUP BY customerShopifyId, orderShopifyId
+       ) sub
+       GROUP BY customerShopifyId`,
+      [storeId, twelveMonthsAgo]
+    ),
+  ]);
+
+  // Aggregate across all customers
+  const [[ltvAgg]] = await KnexClient.raw(
+    `SELECT AVG(cust_total) AS avgLtv, AVG(cust_orders) AS avgOrders
+     FROM (
+       SELECT customerShopifyId,
+              SUM(order_max) AS cust_total,
+              COUNT(*)       AS cust_orders
+       FROM (
+         SELECT customerShopifyId, orderShopifyId,
+                MAX(CAST(totalPrice AS DECIMAL(12,2))) AS order_max
+         FROM shopifyOrderLineItems
+         WHERE storeId = ? AND orderCreatedAt >= ?
+           AND customerShopifyId IS NOT NULL AND cancelledAt IS NULL
+         GROUP BY customerShopifyId, orderShopifyId
+       ) o
+       GROUP BY customerShopifyId
+     ) agg`,
+    [storeId, twelveMonthsAgo]
+  );
+
+  // Repeat purchase rates (30/60/90 days after first order)
+  const [[repeatRows]] = await KnexClient.raw(
+    `SELECT
+       SUM(CASE WHEN DATEDIFF(secondOrder, firstOrder) <= 30 THEN 1 ELSE 0 END) AS repeat30,
+       SUM(CASE WHEN DATEDIFF(secondOrder, firstOrder) <= 60 THEN 1 ELSE 0 END) AS repeat60,
+       SUM(CASE WHEN DATEDIFF(secondOrder, firstOrder) <= 90 THEN 1 ELSE 0 END) AS repeat90,
+       COUNT(*) AS totalWithSecond
+     FROM (
+       SELECT a.customerShopifyId,
+              MIN(a.orderCreatedAt) AS firstOrder,
+              MIN(b.orderCreatedAt) AS secondOrder
+       FROM shopifyOrderLineItems a
+       JOIN shopifyOrderLineItems b
+         ON b.storeId = a.storeId
+         AND b.customerShopifyId = a.customerShopifyId
+         AND b.orderShopifyId != a.orderShopifyId
+         AND b.orderCreatedAt > a.orderCreatedAt
+         AND b.cancelledAt IS NULL
+       WHERE a.storeId = ? AND a.cancelledAt IS NULL AND a.customerShopifyId IS NOT NULL
+       GROUP BY a.customerShopifyId
+     ) pairs`,
+    [storeId]
+  );
+
+  // Avg days between sequential purchases
+  const [[gapRows]] = await KnexClient.raw(
+    `SELECT
+       AVG(CASE WHEN rn = 2 THEN days_since_prev END) AS avgDays1to2,
+       AVG(CASE WHEN rn = 3 THEN days_since_prev END) AS avgDays2to3
+     FROM (
+       SELECT customerShopifyId, orderCreatedAt,
+              ROW_NUMBER() OVER (PARTITION BY customerShopifyId ORDER BY orderCreatedAt) AS rn,
+              DATEDIFF(orderCreatedAt,
+                LAG(orderCreatedAt) OVER (PARTITION BY customerShopifyId ORDER BY orderCreatedAt)
+              ) AS days_since_prev
+       FROM (
+         SELECT DISTINCT customerShopifyId, DATE(orderCreatedAt) AS orderCreatedAt
+         FROM shopifyOrderLineItems
+         WHERE storeId = ? AND customerShopifyId IS NOT NULL AND cancelledAt IS NULL
+       ) orders
+     ) ranked
+     WHERE rn IN (2, 3)`,
+    [storeId]
+  );
+
+  const totalWithSecond = parseInt(repeatRows[0]?.totalWithSecond ?? 1) || 1;
+
+  return {
+    totalCustomers,
+    totalCustomersPrior,
+    newCustomers: current.newCustomers,
+    newCustomersPrior: prior.newCustomers,
+    returningCustomers: current.returningCustomers,
+    returningCustomersPrior: prior.returningCustomers,
+    avgLtv: Math.round(parseFloat(ltvAgg[0]?.avgLtv ?? 0)),
+    avgOrdersPerCustomer: parseFloat(parseFloat(ltvAgg[0]?.avgOrders ?? 0).toFixed(1)),
+    repeatRate30: parseFloat(((parseInt(repeatRows[0]?.repeat30 ?? 0) / totalWithSecond) * 100).toFixed(1)),
+    repeatRate60: parseFloat(((parseInt(repeatRows[0]?.repeat60 ?? 0) / totalWithSecond) * 100).toFixed(1)),
+    repeatRate90: parseFloat(((parseInt(repeatRows[0]?.repeat90 ?? 0) / totalWithSecond) * 100).toFixed(1)),
+    avgDaysFirstToSecond: Math.round(parseFloat(gapRows[0]?.avgDays1to2 ?? 0)),
+    avgDaysSecondToThird: Math.round(parseFloat(gapRows[0]?.avgDays2to3 ?? 0)),
+  };
+}
+
+async function queryCustomerChart(storeId) {
+  const now = new Date();
+  const chartStart = new Date(now.getTime() - 12 * 7 * 86400000);
+
+  const [[orderRows]] = await KnexClient.raw(
+    `SELECT
+       o.customerShopifyId,
+       DATE(o.orderCreatedAt)                              AS orderDay,
+       SUM(o.order_max)                                    AS revenue,
+       f.firstOrder
+     FROM (
+       SELECT customerShopifyId, orderShopifyId,
+              DATE(orderCreatedAt) AS orderCreatedAt,
+              MAX(CAST(totalPrice AS DECIMAL(12,2))) AS order_max
+       FROM shopifyOrderLineItems
+       WHERE storeId = ? AND orderCreatedAt >= ?
+         AND customerShopifyId IS NOT NULL AND cancelledAt IS NULL
+         AND (financialStatus IS NULL OR financialStatus NOT IN ('voided'))
+       GROUP BY customerShopifyId, orderShopifyId, DATE(orderCreatedAt)
+     ) o
+     JOIN (
+       SELECT customerShopifyId, DATE(MIN(orderCreatedAt)) AS firstOrder
+       FROM shopifyOrderLineItems
+       WHERE storeId = ? AND customerShopifyId IS NOT NULL AND cancelledAt IS NULL
+       GROUP BY customerShopifyId
+     ) f ON f.customerShopifyId = o.customerShopifyId
+     GROUP BY o.customerShopifyId, orderDay, f.firstOrder`,
+    [storeId, chartStart, storeId]
+  );
+
+  // Build 12 weekly buckets
+  const weeks = Array.from({ length: 12 }, (_, i) => {
+    const wStart = new Date(chartStart.getTime() + i * 7 * 86400000);
+    const wEnd   = new Date(wStart.getTime() + 7 * 86400000);
+    return { wStart, wEnd, newCustomers: new Set(), returningCustomers: new Set(), newRevenue: 0, returningRevenue: 0 };
+  });
+
+  for (const row of orderRows) {
+    const day = new Date(row.orderDay + "T00:00:00Z");
+    const firstOrder = new Date(row.firstOrder + "T00:00:00Z");
+    const isNew = firstOrder >= chartStart && Math.abs(day - firstOrder) < 86400000;
+
+    for (let i = 0; i < 12; i++) {
+      if (day >= weeks[i].wStart && day < weeks[i].wEnd) {
+        const rev = parseFloat(row.revenue);
+        if (isNew) {
+          weeks[i].newCustomers.add(row.customerShopifyId);
+          weeks[i].newRevenue += rev;
+        } else {
+          weeks[i].returningCustomers.add(row.customerShopifyId);
+          weeks[i].returningRevenue += rev;
+        }
+        break;
+      }
+    }
+  }
+
+  const opts = { month: "short", day: "numeric" };
+  return {
+    weekLabels: weeks.map((w) => "W" + w.wStart.toLocaleDateString("en-US", opts)),
+    newCustomersPerWeek:       weeks.map((w) => w.newCustomers.size),
+    returningCustomersPerWeek: weeks.map((w) => w.returningCustomers.size),
+    newRevenuePerWeek:         weeks.map((w) => Math.round(w.newRevenue)),
+    returningRevenuePerWeek:   weeks.map((w) => Math.round(w.returningRevenue)),
+  };
+}
+
 // Resolves date ranges from either ?start=&end= (custom) or ?period= (preset)
 function resolveRanges(query) {
   if (query.start && query.end) {
@@ -442,6 +684,28 @@ router.get("/home", validateJWT, async (req, res) => {
     });
   } catch (err) {
     console.error("Error in GET /analytics/home:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ── GET /api/analytics/customers?period= | ?start=&end= ────────────────────
+router.get("/customers", validateJWT, async (req, res) => {
+  try {
+    const { shop } = req.user;
+    const { store } = await getStoreAndSettings(shop);
+    if (!store) return res.status(404).json({ error: "Store not found" });
+
+    const { start, end, priorStart, priorEnd } = resolveRanges(req.query);
+
+    const [summary, chartData, topCustomers] = await Promise.all([
+      queryCustomerSummary(store.id, start, end, priorStart, priorEnd),
+      queryCustomerChart(store.id),
+      queryTopCustomers(store.id),
+    ]);
+
+    return res.json({ summary, chartData, topCustomers });
+  } catch (err) {
+    console.error("Error in GET /analytics/customers:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 });
