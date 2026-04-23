@@ -60,6 +60,13 @@ function getDateRanges(period) {
       const periodDays = now.getDate();
       return { start, end, priorStart, priorEnd, chartStart: start, chartEnd: end, periodDays, chartGranularity: "day" };
     }
+    case "last_7_days": {
+      const start = new Date(todayStart.getTime() - 7 * 86400000);
+      const end = new Date(todayStart.getTime() + 86400000);
+      const priorStart = new Date(start.getTime() - 7 * 86400000);
+      const priorEnd = start;
+      return { start, end, priorStart, priorEnd, chartStart: start, chartEnd: end, periodDays: 7, chartGranularity: "day" };
+    }
     case "last_90_days": {
       const start = new Date(todayStart.getTime() - 90 * 86400000);
       const end = new Date(todayStart.getTime() + 86400000);
@@ -674,6 +681,197 @@ router.get("/customers", validateJWT, async (req, res) => {
     return res.json({ summary, chartData, topCustomers });
   } catch (err) {
     console.error("Error in GET /analytics/customers:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ── GET /api/analytics/sales?period= | ?start=&end= ────────────────────────
+router.get("/sales", validateJWT, async (req, res) => {
+  try {
+    const { shop } = req.user;
+    const { store, settings } = await getStoreAndSettings(shop);
+    if (!store) return res.status(404).json({ error: "Store not found" });
+
+    const { start, end, periodDays } = resolveRanges(req.query);
+
+    // Query products with revenue data
+    const [productRows] = await KnexClient.raw(
+      `SELECT
+         productShopifyId,
+         productTitle AS name,
+         SUM(quantity) AS units,
+         SUM(CAST(unitPrice AS DECIMAL(12,2)) * quantity) AS gross
+       FROM shopifyOrderLineItems
+       WHERE storeId = ?
+         AND orderCreatedAt >= ?
+         AND orderCreatedAt < ?
+         AND cancelledAt IS NULL
+         AND (financialStatus IS NULL OR financialStatus NOT IN ('voided'))
+       GROUP BY productShopifyId, productTitle
+       ORDER BY gross DESC
+       LIMIT 20`,
+      [store.id, start, end]
+    );
+
+    // Query refunds by product
+    const [refundRows] = await KnexClient.raw(
+      `SELECT
+         r.productShopifyId,
+         SUM(CAST(r.refundAmount AS DECIMAL(12,2))) AS refunds
+       FROM shopifyRefundLineItems r
+       JOIN shopifyRefunds rf ON rf.refundShopifyId = r.refundShopifyId AND rf.storeId = r.storeId
+       WHERE r.storeId = ?
+         AND rf.processedAt >= ?
+         AND rf.processedAt < ?
+       GROUP BY r.productShopifyId`,
+      [store.id, start, end]
+    );
+
+    const refundMap = new Map();
+    for (const r of refundRows) {
+      refundMap.set(r.productShopifyId, parseFloat(r.refunds ?? 0));
+    }
+
+    const products = productRows.map((p) => ({
+      productShopifyId: p.productShopifyId,
+      name: p.name,
+      units: parseInt(p.units),
+      gross: Math.round(parseFloat(p.gross)),
+      refunds: Math.round(refundMap.get(p.productShopifyId) ?? 0),
+    }));
+
+    // Query daily revenue for chart
+    const [dailyRows] = await KnexClient.raw(
+      `SELECT
+         DATE(orderCreatedAt) AS day,
+         COALESCE(SUM(order_total), 0) AS dailyRevenue
+       FROM (
+         SELECT
+           orderShopifyId,
+           orderCreatedAt,
+           MAX(CAST(totalPrice AS DECIMAL(12,2))) AS order_total
+         FROM shopifyOrderLineItems
+         WHERE storeId = ?
+           AND orderCreatedAt >= ?
+           AND orderCreatedAt < ?
+           AND cancelledAt IS NULL
+           AND (financialStatus IS NULL OR financialStatus NOT IN ('voided'))
+         GROUP BY orderShopifyId, DATE(orderCreatedAt)
+       ) daily
+       GROUP BY DATE(orderCreatedAt)
+       ORDER BY day ASC`,
+      [store.id, start, end]
+    );
+
+    const [refundDailyRows] = await KnexClient.raw(
+      `SELECT DATE(processedAt) AS day, SUM(CAST(totalRefunded AS DECIMAL(12,2))) AS dailyRefunds
+       FROM shopifyRefunds
+       WHERE storeId = ? AND processedAt >= ? AND processedAt < ?
+       GROUP BY DATE(processedAt)`,
+      [store.id, start, end]
+    );
+
+    const revByDay = new Map();
+    for (const r of dailyRows) {
+      const key = r.day instanceof Date ? r.day.toISOString().slice(0, 10) : String(r.day);
+      revByDay.set(key, parseFloat(r.dailyRevenue));
+    }
+
+    const refByDay = new Map();
+    for (const r of refundDailyRows) {
+      const key = r.day instanceof Date ? r.day.toISOString().slice(0, 10) : String(r.day);
+      refByDay.set(key, parseFloat(r.dailyRefunds ?? 0));
+    }
+
+    const dates = [];
+    const grossRevenue = [];
+    const netRevenue = [];
+    const profit = [];
+
+    const maxDays = Math.min(periodDays, 30);
+    for (let i = 0; i < maxDays; i++) {
+      const day = new Date(start.getTime() + i * 86400000);
+      const dayKey = day.toISOString().slice(0, 10);
+      const label = day.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+
+      const gross = revByDay.get(dayKey) ?? 0;
+      const refund = refByDay.get(dayKey) ?? 0;
+      const net = gross - refund;
+      const profitMargin = 0.33; // 33% profit margin estimate
+
+      dates.push(label);
+      grossRevenue.push(Math.round(gross));
+      netRevenue.push(Math.round(net));
+      profit.push(Math.round(net * profitMargin));
+    }
+
+    // Query refund analysis
+    const [refundAnalysisRows] = await KnexClient.raw(
+      `SELECT
+         COUNT(DISTINCT orderShopifyId) AS totalOrders,
+         COUNT(DISTINCT CASE WHEN financialStatus IN ('refunded','partially_refunded') THEN orderShopifyId END) AS refundedOrders
+       FROM shopifyOrderLineItems
+       WHERE storeId = ? AND orderCreatedAt >= ? AND orderCreatedAt < ? AND cancelledAt IS NULL`,
+      [store.id, start, end]
+    );
+
+    const [totalRefundsRows] = await KnexClient.raw(
+      `SELECT COALESCE(SUM(CAST(totalRefunded AS DECIMAL(12,2))), 0) AS totalRefunds
+       FROM shopifyRefunds
+       WHERE storeId = ? AND processedAt >= ? AND processedAt < ?`,
+      [store.id, start, end]
+    );
+
+    const [avgDaysRows] = await KnexClient.raw(
+      `SELECT AVG(DATEDIFF(rf.processedAt, o.orderCreatedAt)) AS avgDays
+       FROM shopifyRefunds rf
+       JOIN shopifyOrderLineItems o ON o.orderShopifyId = rf.orderShopifyId AND o.storeId = rf.storeId
+       WHERE rf.storeId = ? AND rf.processedAt >= ? AND rf.processedAt < ?`,
+      [store.id, start, end]
+    );
+
+    const [topRefundedRows] = await KnexClient.raw(
+      `SELECT
+         r.productShopifyId,
+         p.productTitle AS name,
+         COUNT(*) AS refunds,
+         SUM(CAST(r.refundAmount AS DECIMAL(12,2))) AS amount
+       FROM shopifyRefundLineItems r
+       JOIN shopifyRefunds rf ON rf.refundShopifyId = r.refundShopifyId AND rf.storeId = r.storeId
+       JOIN shopifyOrderLineItems p ON p.productShopifyId = r.productShopifyId AND p.storeId = r.storeId
+       WHERE r.storeId = ?
+         AND rf.processedAt >= ?
+         AND rf.processedAt < ?
+       GROUP BY r.productShopifyId, p.productTitle
+       ORDER BY amount DESC
+       LIMIT 5`,
+      [store.id, start, end]
+    );
+
+    const totalOrders = parseInt(refundAnalysisRows[0]?.totalOrders ?? 0);
+    const refundedOrders = parseInt(refundAnalysisRows[0]?.refundedOrders ?? 0);
+    const totalRefunds = parseFloat(totalRefundsRows[0]?.totalRefunds ?? 0);
+    const totalGrossRevenue = products.reduce((sum, p) => sum + p.gross, 0);
+
+    const refundAnalysis = {
+      totalRefunds: Math.round(totalRefunds),
+      refundRateOrders: totalOrders > 0 ? parseFloat(((refundedOrders / totalOrders) * 100).toFixed(1)) : 0,
+      refundRateRevenue: totalGrossRevenue > 0 ? parseFloat(((totalRefunds / totalGrossRevenue) * 100).toFixed(1)) : 0,
+      avgDaysToRefund: Math.round(parseFloat(avgDaysRows[0]?.avgDays ?? 0)),
+      topRefunded: topRefundedRows.map((r) => ({
+        name: r.name,
+        refunds: parseInt(r.refunds),
+        amount: Math.round(parseFloat(r.amount)),
+      })),
+    };
+
+    return res.json({
+      products,
+      chartData: { dates, grossRevenue, netRevenue, profit },
+      refundAnalysis,
+    });
+  } catch (err) {
+    console.error("Error in GET /analytics/sales:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 });
