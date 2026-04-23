@@ -42,9 +42,7 @@ function getDateRanges(period) {
       const end = new Date(todayStart.getTime() + 86400000);
       const priorStart = new Date(todayStart.getTime() - 86400000);
       const priorEnd = todayStart;
-      // Chart shows last 7 days as context
-      const chartStart = new Date(todayStart.getTime() - 6 * 86400000);
-      return { start, end, priorStart, priorEnd, chartStart, chartEnd: end, periodDays: 1, chartGranularity: "day" };
+      return { start, end, priorStart, priorEnd, chartStart: start, chartEnd: end, periodDays: 1, chartGranularity: "day" };
     }
     case "this_week": {
       const dayOfWeek = todayStart.getDay();
