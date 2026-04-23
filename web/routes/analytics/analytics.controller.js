@@ -358,29 +358,10 @@ async function queryCustomerSummary(storeId, start, end, priorStart, priorEnd) {
   const totalCustomers      = parseInt(totCur[0]?.total ?? 0);
   const totalCustomersPrior = parseInt(totPri[0]?.total ?? 0);
 
-  // Avg LTV (last 12 months) and avg orders per customer
   const twelveMonthsAgo = new Date();
   twelveMonthsAgo.setMonth(twelveMonthsAgo.getMonth() - 12);
 
-  const [[ltvRows]] = await Promise.all([
-    KnexClient.raw(
-      `SELECT AVG(cust_total) AS avgLtv, AVG(cust_orders) AS avgOrders
-       FROM (
-         SELECT customerShopifyId,
-                SUM(MAX(CAST(totalPrice AS DECIMAL(12,2)))) AS cust_total,
-                COUNT(DISTINCT orderShopifyId)              AS cust_orders
-         FROM shopifyOrderLineItems
-         WHERE storeId = ? AND orderCreatedAt >= ?
-           AND customerShopifyId IS NOT NULL AND cancelledAt IS NULL
-         GROUP BY customerShopifyId, orderShopifyId
-       ) sub
-       GROUP BY customerShopifyId`,
-      [storeId, twelveMonthsAgo]
-    ),
-  ]);
-
-  // Aggregate across all customers
-  const [[ltvAgg]] = await KnexClient.raw(
+  const [ltvRows] = await KnexClient.raw(
     `SELECT AVG(cust_total) AS avgLtv, AVG(cust_orders) AS avgOrders
      FROM (
        SELECT customerShopifyId,
@@ -399,8 +380,7 @@ async function queryCustomerSummary(storeId, start, end, priorStart, priorEnd) {
     [storeId, twelveMonthsAgo]
   );
 
-  // Repeat purchase rates (30/60/90 days after first order)
-  const [[repeatRows]] = await KnexClient.raw(
+  const [repeatRows] = await KnexClient.raw(
     `SELECT
        SUM(CASE WHEN DATEDIFF(secondOrder, firstOrder) <= 30 THEN 1 ELSE 0 END) AS repeat30,
        SUM(CASE WHEN DATEDIFF(secondOrder, firstOrder) <= 60 THEN 1 ELSE 0 END) AS repeat60,
@@ -423,8 +403,7 @@ async function queryCustomerSummary(storeId, start, end, priorStart, priorEnd) {
     [storeId]
   );
 
-  // Avg days between sequential purchases
-  const [[gapRows]] = await KnexClient.raw(
+  const [gapRows] = await KnexClient.raw(
     `SELECT
        AVG(CASE WHEN rn = 2 THEN days_since_prev END) AS avgDays1to2,
        AVG(CASE WHEN rn = 3 THEN days_since_prev END) AS avgDays2to3
@@ -453,8 +432,8 @@ async function queryCustomerSummary(storeId, start, end, priorStart, priorEnd) {
     newCustomersPrior: prior.newCustomers,
     returningCustomers: current.returningCustomers,
     returningCustomersPrior: prior.returningCustomers,
-    avgLtv: Math.round(parseFloat(ltvAgg[0]?.avgLtv ?? 0)),
-    avgOrdersPerCustomer: parseFloat(parseFloat(ltvAgg[0]?.avgOrders ?? 0).toFixed(1)),
+    avgLtv: Math.round(parseFloat(ltvRows[0]?.avgLtv ?? 0)),
+    avgOrdersPerCustomer: parseFloat(parseFloat(ltvRows[0]?.avgOrders ?? 0).toFixed(1)),
     repeatRate30: parseFloat(((parseInt(repeatRows[0]?.repeat30 ?? 0) / totalWithSecond) * 100).toFixed(1)),
     repeatRate60: parseFloat(((parseInt(repeatRows[0]?.repeat60 ?? 0) / totalWithSecond) * 100).toFixed(1)),
     repeatRate90: parseFloat(((parseInt(repeatRows[0]?.repeat90 ?? 0) / totalWithSecond) * 100).toFixed(1)),
@@ -467,7 +446,7 @@ async function queryCustomerChart(storeId) {
   const now = new Date();
   const chartStart = new Date(now.getTime() - 12 * 7 * 86400000);
 
-  const [[orderRows]] = await KnexClient.raw(
+  const [orderRows] = await KnexClient.raw(
     `SELECT
        o.customerShopifyId,
        DATE(o.orderCreatedAt)                              AS orderDay,
