@@ -6,6 +6,7 @@ import WebhookController from "./routes/webhook/webhook.controller.js";
 import OnboardingController from "./routes/onboarding/onboarding.controller.js";
 import BillingController from "./routes/billing/billing.controller.js";
 import ProductsController from "./routes/products/products.controller.js";
+import AnalyticsController from "./routes/analytics/analytics.controller.js";
 import cors from "cors";
 import dotenv from "dotenv";
 import { runDbSetup } from "./db/setup.js";
@@ -36,6 +37,7 @@ app.use("/api/user", UserController);
 app.use("/api/onboarding", OnboardingController);
 app.use("/api/billing", BillingController);
 app.use("/api/products", ProductsController);
+app.use("/api/analytics", AnalyticsController);
 
 runDbSetup();
 
