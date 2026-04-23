@@ -324,7 +324,9 @@ router.get("/pnl", validateJWT, async (req, res) => {
       refunds,
       refundsPrior,
       adSpend: dailyAdSpend * periodDays,
+      adSpendPrior: dailyAdSpend * periodDays,
       orders: current.orderCount,
+      ordersPrior: prior.orderCount,
     });
   } catch (err) {
     console.error("Error in GET /analytics/pnl:", err);
@@ -342,12 +344,13 @@ router.get("/kpis", validateJWT, async (req, res) => {
 
     const { start, end, priorStart, priorEnd } = resolveRanges(req.query);
 
-    const [current, customersPrior, currentRev, priorRev, refunds] = await Promise.all([
+    const [current, customersPrior, currentRev, priorRev, refunds, refundsPrior] = await Promise.all([
       queryCustomers(store.id, start, end),
       queryCustomers(store.id, priorStart, priorEnd),
       queryRevenue(store.id, start, end),
       queryRevenue(store.id, priorStart, priorEnd),
       queryRefunds(store.id, start, end),
+      queryRefunds(store.id, priorStart, priorEnd),
     ]);
 
     return res.json({
@@ -356,7 +359,9 @@ router.get("/kpis", validateJWT, async (req, res) => {
       grossRevenue: currentRev.grossRevenue,
       grossRevenuePrior: priorRev.grossRevenue,
       discounts: currentRev.discounts,
+      discountsPrior: priorRev.discounts,
       refunds,
+      refundsPrior,
       newCustomers: current.newCustomers,
       newCustomersPrior: customersPrior.newCustomers,
       returningCustomers: current.returningCustomers,
@@ -403,11 +408,12 @@ router.get("/home", validateJWT, async (req, res) => {
 
     const dailyAdSpend = settings?.dailyAdSpend ? parseFloat(settings.dailyAdSpend) : 0;
 
-    const [currentRev, priorRev, refunds, customers, customersPrior, chart] =
+    const [currentRev, priorRev, refunds, refundsPrior, customers, customersPrior, chart] =
       await Promise.all([
         queryRevenue(store.id, start, end),
         queryRevenue(store.id, priorStart, priorEnd),
         queryRefunds(store.id, start, end),
+        queryRefunds(store.id, priorStart, priorEnd),
         queryCustomers(store.id, start, end),
         queryCustomers(store.id, priorStart, priorEnd),
         queryChartData(store.id, chartStart, chartEnd, chartGranularity, settings),
@@ -417,8 +423,11 @@ router.get("/home", validateJWT, async (req, res) => {
       grossRevenue: currentRev.grossRevenue,
       grossRevenuePrior: priorRev.grossRevenue,
       discounts: currentRev.discounts,
+      discountsPrior: priorRev.discounts,
       refunds,
+      refundsPrior,
       adSpend: dailyAdSpend * periodDays,
+      adSpendPrior: dailyAdSpend * periodDays,
       orders: currentRev.orderCount,
       ordersPrior: priorRev.orderCount,
       newCustomers: customers.newCustomers,
