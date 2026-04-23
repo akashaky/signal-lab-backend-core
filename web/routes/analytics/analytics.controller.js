@@ -337,29 +337,19 @@ async function queryCustomerSummary(storeId, start, end, priorStart, priorEnd) {
     queryCustomers(storeId, priorStart, priorEnd),
   ]);
 
-  // Total distinct customers in period
-  const [[totCur], [totPri]] = await Promise.all([
-    KnexClient.raw(
-      `SELECT COUNT(DISTINCT customerShopifyId) AS total
-       FROM shopifyOrderLineItems
-       WHERE storeId = ? AND orderCreatedAt >= ? AND orderCreatedAt < ?
-         AND customerShopifyId IS NOT NULL AND cancelledAt IS NULL`,
-      [storeId, start, end]
-    ),
-    KnexClient.raw(
-      `SELECT COUNT(DISTINCT customerShopifyId) AS total
-       FROM shopifyOrderLineItems
-       WHERE storeId = ? AND orderCreatedAt >= ? AND orderCreatedAt < ?
-         AND customerShopifyId IS NOT NULL AND cancelledAt IS NULL`,
-      [storeId, priorStart, priorEnd]
-    ),
-  ]);
-
-  const totalCustomers      = parseInt(totCur[0]?.total ?? 0);
-  const totalCustomersPrior = parseInt(totPri[0]?.total ?? 0);
-
   const twelveMonthsAgo = new Date();
   twelveMonthsAgo.setMonth(twelveMonthsAgo.getMonth() - 12);
+
+  // Total distinct customers — always 12-month window to match label
+  const [totRows] = await KnexClient.raw(
+    `SELECT COUNT(DISTINCT customerShopifyId) AS total
+     FROM shopifyOrderLineItems
+     WHERE storeId = ? AND orderCreatedAt >= ?
+       AND customerShopifyId IS NOT NULL AND cancelledAt IS NULL`,
+    [storeId, twelveMonthsAgo]
+  );
+
+  const totalCustomers = parseInt(totRows[0]?.total ?? 0);
 
   const [ltvRows] = await KnexClient.raw(
     `SELECT AVG(cust_total) AS avgLtv, AVG(cust_orders) AS avgOrders
@@ -427,7 +417,6 @@ async function queryCustomerSummary(storeId, start, end, priorStart, priorEnd) {
 
   return {
     totalCustomers,
-    totalCustomersPrior,
     newCustomers: current.newCustomers,
     newCustomersPrior: prior.newCustomers,
     returningCustomers: current.returningCustomers,
