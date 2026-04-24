@@ -476,8 +476,10 @@ async function queryCustomerChart(storeId) {
   });
 
   for (const row of orderRows) {
-    const day = new Date(row.orderDay + "T00:00:00Z");
-    const firstOrder = new Date(row.firstOrder + "T00:00:00Z");
+    const dayStr = row.orderDay instanceof Date ? row.orderDay.toISOString().slice(0, 10) : String(row.orderDay);
+    const firstStr = row.firstOrder instanceof Date ? row.firstOrder.toISOString().slice(0, 10) : String(row.firstOrder);
+    const day = new Date(dayStr + "T00:00:00Z");
+    const firstOrder = new Date(firstStr + "T00:00:00Z");
     const isNew = firstOrder >= chartStart && Math.abs(day - firstOrder) < 86400000;
 
     for (let i = 0; i < 12; i++) {
@@ -943,8 +945,8 @@ router.get("/product-performance", validateJWT, async (req, res) => {
       const orders = parseInt(p.orders);
       const units = parseInt(p.units);
       const net = gross - refunds;
-      const profit = net * (1 - cogsPct);
-      const margin = gross > 0 ? parseFloat(((profit / gross) * 100).toFixed(1)) : 0;
+      const profit = net - gross * cogsPct;
+      const margin = net > 0 ? parseFloat(((profit / net) * 100).toFixed(1)) : 0;
       const aov = orders > 0 ? parseFloat((gross / orders).toFixed(2)) : 0;
       const refundRate = gross > 0 ? parseFloat(((refunds / gross) * 100).toFixed(1)) : 0;
       const trend = priorGross > 0
