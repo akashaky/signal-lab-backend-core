@@ -193,43 +193,55 @@ async function queryCustomers(storeId, start, end) {
   return { newCustomers, returningCustomers, repeatRate, refundRate };
 }
 
-async function queryChartData(storeId, chartStart, chartEnd, chartGranularity, settings) {
-  const [revRows] = await KnexClient.raw(
-    `SELECT
-       DATE(orderCreatedAt) AS day,
-       COALESCE(SUM(order_total), 0)                             AS dailyRevenue,
-       COALESCE(SUM(GREATEST(item_gross - order_subtotal, 0)), 0) AS dailyDiscounts,
-       COUNT(*)                                                   AS dailyOrders
-     FROM (
-       SELECT
-         orderShopifyId,
-         orderCreatedAt,
-         MAX(CAST(totalPrice    AS DECIMAL(12,2))) AS order_total,
-         MAX(CAST(subtotalPrice AS DECIMAL(12,2))) AS order_subtotal,
-         SUM(CAST(unitPrice     AS DECIMAL(12,2)) * quantity)    AS item_gross
-       FROM shopifyOrderLineItems
-       WHERE storeId = ?
-         AND orderCreatedAt >= ? AND orderCreatedAt < ?
-         AND cancelledAt IS NULL
-         AND (financialStatus IS NULL OR financialStatus NOT IN ('voided'))
-       GROUP BY orderShopifyId, DATE(orderCreatedAt)
-     ) daily
-     GROUP BY DATE(orderCreatedAt)
-     ORDER BY day ASC`,
-    [storeId, chartStart, chartEnd]
-  );
+async function queryChartData(storeId, chartStart, chartEnd, chartGranularity, settings, history = []) {
+  const defaultCogsPct = settings ? parseFloat(settings.cogsPercent) : 30;
 
-  const [refRows] = await KnexClient.raw(
-    `SELECT DATE(processedAt) AS day, SUM(CAST(totalRefunded AS DECIMAL(12,2))) AS dailyRefunds
-     FROM shopifyRefunds
-     WHERE storeId = ? AND processedAt >= ? AND processedAt < ?
-     GROUP BY DATE(processedAt)`,
-    [storeId, chartStart, chartEnd]
-  );
-
-  const cogsPct = settings ? parseFloat(settings.cogsPercent) / 100 : 0.30;
-  const avgShipping = settings ? parseFloat(settings.avgShipping) : 4.50;
-  const dailyAdSpend = settings?.dailyAdSpend ? parseFloat(settings.dailyAdSpend) : 0;
+  const [[revRows], [refRows], [cogsRows]] = await Promise.all([
+    KnexClient.raw(
+      `SELECT
+         DATE(orderCreatedAt) AS day,
+         COALESCE(SUM(order_total), 0)                             AS dailyRevenue,
+         COALESCE(SUM(GREATEST(item_gross - order_subtotal, 0)), 0) AS dailyDiscounts,
+         COUNT(*)                                                   AS dailyOrders
+       FROM (
+         SELECT
+           orderShopifyId,
+           orderCreatedAt,
+           MAX(CAST(totalPrice    AS DECIMAL(12,2))) AS order_total,
+           MAX(CAST(subtotalPrice AS DECIMAL(12,2))) AS order_subtotal,
+           SUM(CAST(unitPrice     AS DECIMAL(12,2)) * quantity)    AS item_gross
+         FROM shopifyOrderLineItems
+         WHERE storeId = ?
+           AND orderCreatedAt >= ? AND orderCreatedAt < ?
+           AND cancelledAt IS NULL
+           AND (financialStatus IS NULL OR financialStatus NOT IN ('voided'))
+         GROUP BY orderShopifyId, DATE(orderCreatedAt)
+       ) daily
+       GROUP BY DATE(orderCreatedAt)
+       ORDER BY day ASC`,
+      [storeId, chartStart, chartEnd]
+    ),
+    KnexClient.raw(
+      `SELECT DATE(processedAt) AS day, SUM(CAST(totalRefunded AS DECIMAL(12,2))) AS dailyRefunds
+       FROM shopifyRefunds
+       WHERE storeId = ? AND processedAt >= ? AND processedAt < ?
+       GROUP BY DATE(processedAt)`,
+      [storeId, chartStart, chartEnd]
+    ),
+    KnexClient.raw(
+      `SELECT
+         DATE(ol.orderCreatedAt) AS day,
+         SUM(CAST(ol.unitPrice AS DECIMAL(12,2)) * ol.quantity * COALESCE(vc.cogsPercent, ?) / 100) AS dailyCogs
+       FROM shopifyOrderLineItems ol
+       LEFT JOIN productVariantCogs vc
+         ON vc.variantShopifyId = ol.variantShopifyId AND vc.storeId = ol.storeId
+       WHERE ol.storeId = ? AND ol.orderCreatedAt >= ? AND ol.orderCreatedAt < ?
+         AND ol.cancelledAt IS NULL
+         AND (ol.financialStatus IS NULL OR ol.financialStatus NOT IN ('voided'))
+       GROUP BY DATE(ol.orderCreatedAt)`,
+      [defaultCogsPct, storeId, chartStart, chartEnd]
+    ),
+  ]);
 
   const revByDay = new Map();
   for (const r of revRows) {
@@ -247,6 +259,12 @@ async function queryChartData(storeId, chartStart, chartEnd, chartGranularity, s
     refByDay.set(key, parseFloat(r.dailyRefunds ?? 0));
   }
 
+  const cogsByDay = new Map();
+  for (const r of cogsRows) {
+    const key = r.day instanceof Date ? r.day.toISOString().slice(0, 10) : String(r.day);
+    cogsByDay.set(key, parseFloat(r.dailyCogs ?? 0));
+  }
+
   const chartDates = [];
   const chartRevenue = [];
   const chartProfit = [];
@@ -258,16 +276,20 @@ async function queryChartData(storeId, chartStart, chartEnd, chartGranularity, s
   for (let i = 0; i < bucketCount; i++) {
     const bucketStart = new Date(chartStart.getTime() + i * bucketDays * 86400000);
 
-    let bRevenue = 0, bDiscounts = 0, bRefunds = 0, bOrders = 0;
+    let bRevenue = 0, bDiscounts = 0, bRefunds = 0, bOrders = 0, bCogs = 0, bShipping = 0, bAdSpend = 0;
     for (let d = 0; d < bucketDays; d++) {
       const dayKey = new Date(bucketStart.getTime() + d * 86400000)
         .toISOString()
         .slice(0, 10);
       const day = revByDay.get(dayKey) ?? { revenue: 0, discounts: 0, orders: 0 };
+      const costs = findCostForDay(history, dayKey, settings);
       bRevenue += day.revenue;
       bDiscounts += day.discounts;
       bRefunds += refByDay.get(dayKey) ?? 0;
       bOrders += day.orders;
+      bCogs += cogsByDay.get(dayKey) ?? 0;
+      bShipping += day.orders * costs.avgShipping;
+      bAdSpend += costs.dailyAdSpend;
     }
 
     let label;
@@ -282,10 +304,7 @@ async function queryChartData(storeId, chartStart, chartEnd, chartGranularity, s
     }
 
     const netRevenue = bRevenue - bDiscounts - bRefunds;
-    const cogs = netRevenue * cogsPct;
-    const shipping = bOrders * avgShipping;
-    const adSpend = dailyAdSpend * bucketDays;
-    const profit = Math.round(netRevenue - cogs - shipping - adSpend);
+    const profit = Math.round(netRevenue - bCogs - bShipping - bAdSpend);
 
     chartDates.push(label);
     chartRevenue.push(Math.round(bRevenue));
@@ -507,6 +526,39 @@ async function queryCustomerChart(storeId) {
   };
 }
 
+// ── Cost history helpers ────────────────────────────────────────────────────
+
+async function getStoreCostHistory(storeId) {
+  const rows = await KnexClient("storeCostHistory")
+    .where("storeId", storeId)
+    .orderBy("startDate", "asc");
+  return rows.map((r) => ({
+    startDate: r.startDate instanceof Date ? r.startDate.toISOString().slice(0, 10) : String(r.startDate).slice(0, 10),
+    endDate: r.endDate ? (r.endDate instanceof Date ? r.endDate.toISOString().slice(0, 10) : String(r.endDate).slice(0, 10)) : null,
+    avgShipping: parseFloat(r.avgShipping),
+    dailyAdSpend: parseFloat(r.dailyAdSpend),
+  }));
+}
+
+function findCostForDay(history, dayStr, settings) {
+  const entry = history
+    .filter((h) => h.startDate <= dayStr && (h.endDate === null || h.endDate >= dayStr))
+    .sort((a, b) => b.startDate.localeCompare(a.startDate))[0];
+  return entry ?? {
+    avgShipping: settings ? parseFloat(settings.avgShipping) : 4.50,
+    dailyAdSpend: settings?.dailyAdSpend ? parseFloat(settings.dailyAdSpend) : 0,
+  };
+}
+
+function sumAdSpendForPeriod(history, settings, start, periodDays) {
+  let total = 0;
+  for (let i = 0; i < periodDays; i++) {
+    const dayStr = new Date(start.getTime() + i * 86400000).toISOString().slice(0, 10);
+    total += findCostForDay(history, dayStr, settings).dailyAdSpend;
+  }
+  return total;
+}
+
 // Resolves date ranges from either ?start=&end= (custom) or ?period= (preset)
 function resolveRanges(query) {
   if (query.start && query.end) {
@@ -524,9 +576,8 @@ router.get("/pnl", validateJWT, async (req, res) => {
     if (!store) return res.status(404).json({ error: "Store not found" });
 
     const { start, end, priorStart, priorEnd, periodDays } = resolveRanges(req.query);
-    const dailyAdSpend = settings?.dailyAdSpend ? parseFloat(settings.dailyAdSpend) : 0;
-
-    const [current, prior, refunds, refundsPrior] = await Promise.all([
+    const [history, current, prior, refunds, refundsPrior] = await Promise.all([
+      getStoreCostHistory(store.id),
       queryRevenue(store.id, start, end),
       queryRevenue(store.id, priorStart, priorEnd),
       queryRefunds(store.id, start, end),
@@ -540,8 +591,8 @@ router.get("/pnl", validateJWT, async (req, res) => {
       discountsPrior: prior.discounts,
       refunds,
       refundsPrior,
-      adSpend: dailyAdSpend * periodDays,
-      adSpendPrior: dailyAdSpend * periodDays,
+      adSpend: sumAdSpendForPeriod(history, settings, start, periodDays),
+      adSpendPrior: sumAdSpendForPeriod(history, settings, priorStart, periodDays),
       orders: current.orderCount,
       ordersPrior: prior.orderCount,
     });
@@ -603,7 +654,8 @@ router.get("/chart", validateJWT, async (req, res) => {
     if (!store) return res.status(404).json({ error: "Store not found" });
 
     const { chartStart, chartEnd, chartGranularity } = resolveRanges(req.query);
-    const chart = await queryChartData(store.id, chartStart, chartEnd, chartGranularity, settings);
+    const history = await getStoreCostHistory(store.id);
+    const chart = await queryChartData(store.id, chartStart, chartEnd, chartGranularity, settings, history);
 
     return res.json(chart);
   } catch (err) {
@@ -623,7 +675,7 @@ router.get("/home", validateJWT, async (req, res) => {
     const { start, end, priorStart, priorEnd, chartStart, chartEnd, periodDays, chartGranularity } =
       resolveRanges(req.query);
 
-    const dailyAdSpend = settings?.dailyAdSpend ? parseFloat(settings.dailyAdSpend) : 0;
+    const history = await getStoreCostHistory(store.id);
 
     const [currentRev, priorRev, refunds, refundsPrior, customers, customersPrior, chart] =
       await Promise.all([
@@ -633,7 +685,7 @@ router.get("/home", validateJWT, async (req, res) => {
         queryRefunds(store.id, priorStart, priorEnd),
         queryCustomers(store.id, start, end),
         queryCustomers(store.id, priorStart, priorEnd),
-        queryChartData(store.id, chartStart, chartEnd, chartGranularity, settings),
+        queryChartData(store.id, chartStart, chartEnd, chartGranularity, settings, history),
       ]);
 
     return res.json({
@@ -643,8 +695,8 @@ router.get("/home", validateJWT, async (req, res) => {
       discountsPrior: priorRev.discounts,
       refunds,
       refundsPrior,
-      adSpend: dailyAdSpend * periodDays,
-      adSpendPrior: dailyAdSpend * periodDays,
+      adSpend: sumAdSpendForPeriod(history, settings, start, periodDays),
+      adSpendPrior: sumAdSpendForPeriod(history, settings, priorStart, periodDays),
       orders: currentRev.orderCount,
       ordersPrior: priorRev.orderCount,
       newCustomers: customers.newCustomers,
@@ -695,6 +747,7 @@ router.get("/sales", validateJWT, async (req, res) => {
     if (!store) return res.status(404).json({ error: "Store not found" });
 
     const { start, end, periodDays } = resolveRanges(req.query);
+    const defaultCogsPct = settings ? parseFloat(settings.cogsPercent) : 30;
 
     // Query products with revenue data (group by lineItemTitle since no productShopifyId on line items)
     const [productRows] = await KnexClient.raw(
@@ -741,36 +794,50 @@ router.get("/sales", validateJWT, async (req, res) => {
       refunds: Math.round(refundMap.get(p.name) ?? 0),
     }));
 
-    // Query daily revenue for chart
-    const [dailyRows] = await KnexClient.raw(
-      `SELECT
-         DATE(orderCreatedAt) AS day,
-         COALESCE(SUM(order_total), 0) AS dailyRevenue
-       FROM (
-         SELECT
-           orderShopifyId,
-           orderCreatedAt,
-           MAX(CAST(totalPrice AS DECIMAL(12,2))) AS order_total
-         FROM shopifyOrderLineItems
-         WHERE storeId = ?
-           AND orderCreatedAt >= ?
-           AND orderCreatedAt < ?
-           AND cancelledAt IS NULL
-           AND (financialStatus IS NULL OR financialStatus NOT IN ('voided'))
-         GROUP BY orderShopifyId, DATE(orderCreatedAt)
-       ) daily
-       GROUP BY DATE(orderCreatedAt)
-       ORDER BY day ASC`,
-      [store.id, start, end]
-    );
-
-    const [refundDailyRows] = await KnexClient.raw(
-      `SELECT DATE(processedAt) AS day, SUM(CAST(totalRefunded AS DECIMAL(12,2))) AS dailyRefunds
-       FROM shopifyRefunds
-       WHERE storeId = ? AND processedAt >= ? AND processedAt < ?
-       GROUP BY DATE(processedAt)`,
-      [store.id, start, end]
-    );
+    // Query daily revenue, refunds, and per-variant COGS for chart
+    const [[dailyRows], [refundDailyRows], [cogsRows]] = await Promise.all([
+      KnexClient.raw(
+        `SELECT
+           DATE(orderCreatedAt) AS day,
+           COALESCE(SUM(order_total), 0) AS dailyRevenue
+         FROM (
+           SELECT
+             orderShopifyId,
+             orderCreatedAt,
+             MAX(CAST(totalPrice AS DECIMAL(12,2))) AS order_total
+           FROM shopifyOrderLineItems
+           WHERE storeId = ?
+             AND orderCreatedAt >= ?
+             AND orderCreatedAt < ?
+             AND cancelledAt IS NULL
+             AND (financialStatus IS NULL OR financialStatus NOT IN ('voided'))
+           GROUP BY orderShopifyId, DATE(orderCreatedAt)
+         ) daily
+         GROUP BY DATE(orderCreatedAt)
+         ORDER BY day ASC`,
+        [store.id, start, end]
+      ),
+      KnexClient.raw(
+        `SELECT DATE(processedAt) AS day, SUM(CAST(totalRefunded AS DECIMAL(12,2))) AS dailyRefunds
+         FROM shopifyRefunds
+         WHERE storeId = ? AND processedAt >= ? AND processedAt < ?
+         GROUP BY DATE(processedAt)`,
+        [store.id, start, end]
+      ),
+      KnexClient.raw(
+        `SELECT
+           DATE(ol.orderCreatedAt) AS day,
+           SUM(CAST(ol.unitPrice AS DECIMAL(12,2)) * ol.quantity * COALESCE(vc.cogsPercent, ?) / 100) AS dailyCogs
+         FROM shopifyOrderLineItems ol
+         LEFT JOIN productVariantCogs vc
+           ON vc.variantShopifyId = ol.variantShopifyId AND vc.storeId = ol.storeId
+         WHERE ol.storeId = ? AND ol.orderCreatedAt >= ? AND ol.orderCreatedAt < ?
+           AND ol.cancelledAt IS NULL
+           AND (ol.financialStatus IS NULL OR ol.financialStatus NOT IN ('voided'))
+         GROUP BY DATE(ol.orderCreatedAt)`,
+        [defaultCogsPct, store.id, start, end]
+      ),
+    ]);
 
     const revByDay = new Map();
     for (const r of dailyRows) {
@@ -782,6 +849,12 @@ router.get("/sales", validateJWT, async (req, res) => {
     for (const r of refundDailyRows) {
       const key = r.day instanceof Date ? r.day.toISOString().slice(0, 10) : String(r.day);
       refByDay.set(key, parseFloat(r.dailyRefunds ?? 0));
+    }
+
+    const cogsByDay = new Map();
+    for (const r of cogsRows) {
+      const key = r.day instanceof Date ? r.day.toISOString().slice(0, 10) : String(r.day);
+      cogsByDay.set(key, parseFloat(r.dailyCogs ?? 0));
     }
 
     const dates = [];
@@ -797,13 +870,13 @@ router.get("/sales", validateJWT, async (req, res) => {
 
       const gross = revByDay.get(dayKey) ?? 0;
       const refund = refByDay.get(dayKey) ?? 0;
+      const cogs = cogsByDay.get(dayKey) ?? 0;
       const net = gross - refund;
-      const profitMargin = 0.33; // 33% profit margin estimate
 
       dates.push(label);
       grossRevenue.push(Math.round(gross));
       netRevenue.push(Math.round(net));
-      profit.push(Math.round(net * profitMargin));
+      profit.push(Math.round(net - cogs));
     }
 
     // Query refund analysis
@@ -884,25 +957,28 @@ router.get("/product-performance", validateJWT, async (req, res) => {
     if (!store) return res.status(404).json({ error: "Store not found" });
 
     const { start, end, priorStart, priorEnd } = resolveRanges(req.query);
-    const cogsPct = settings ? parseFloat(settings.cogsPercent) / 100 : 0.30;
+    const defaultCogsPct = settings ? parseFloat(settings.cogsPercent) : 30;
 
     const [[productRows], [priorRows], [refundRows]] = await Promise.all([
       KnexClient.raw(
         `SELECT
-           lineItemTitle AS name,
-           SUM(quantity) AS units,
-           COUNT(DISTINCT orderShopifyId) AS orders,
-           SUM(CAST(unitPrice AS DECIMAL(12,2)) * quantity) AS gross
-         FROM shopifyOrderLineItems
-         WHERE storeId = ?
-           AND orderCreatedAt >= ?
-           AND orderCreatedAt < ?
-           AND cancelledAt IS NULL
-           AND (financialStatus IS NULL OR financialStatus NOT IN ('voided'))
-         GROUP BY lineItemTitle
+           ol.lineItemTitle AS name,
+           SUM(ol.quantity) AS units,
+           COUNT(DISTINCT ol.orderShopifyId) AS orders,
+           SUM(CAST(ol.unitPrice AS DECIMAL(12,2)) * ol.quantity) AS gross,
+           SUM(CAST(ol.unitPrice AS DECIMAL(12,2)) * ol.quantity * COALESCE(vc.cogsPercent, ?) / 100) AS cogsAmount
+         FROM shopifyOrderLineItems ol
+         LEFT JOIN productVariantCogs vc
+           ON vc.variantShopifyId = ol.variantShopifyId AND vc.storeId = ol.storeId
+         WHERE ol.storeId = ?
+           AND ol.orderCreatedAt >= ?
+           AND ol.orderCreatedAt < ?
+           AND ol.cancelledAt IS NULL
+           AND (ol.financialStatus IS NULL OR ol.financialStatus NOT IN ('voided'))
+         GROUP BY ol.lineItemTitle
          ORDER BY gross DESC
          LIMIT 20`,
-        [store.id, start, end]
+        [defaultCogsPct, store.id, start, end]
       ),
       KnexClient.raw(
         `SELECT
@@ -942,10 +1018,11 @@ router.get("/product-performance", validateJWT, async (req, res) => {
       const gross = parseFloat(p.gross ?? 0);
       const priorGross = priorMap.get(p.name) ?? 0;
       const refunds = refundMap.get(p.name) ?? 0;
+      const cogs = parseFloat(p.cogsAmount ?? 0);
       const orders = parseInt(p.orders);
       const units = parseInt(p.units);
       const net = gross - refunds;
-      const profit = net - gross * cogsPct;
+      const profit = net - cogs;
       const margin = net > 0 ? parseFloat(((profit / net) * 100).toFixed(1)) : 0;
       const aov = orders > 0 ? parseFloat((gross / orders).toFixed(2)) : 0;
       const refundRate = gross > 0 ? parseFloat(((refunds / gross) * 100).toFixed(1)) : 0;

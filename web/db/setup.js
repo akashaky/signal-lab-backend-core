@@ -50,6 +50,21 @@ export async function runDbSetup() {
       console.log("✅ Created productVariantCogs table");
     }
 
+    const hasCostHistory = await KnexClient.schema.hasTable("storeCostHistory");
+    if (!hasCostHistory) {
+      await KnexClient.schema.createTable("storeCostHistory", (table) => {
+        table.increments("id").primary();
+        table.integer("storeId").unsigned().notNullable();
+        table.foreign("storeId").references("id").inTable("shopifyStore");
+        table.date("startDate").notNullable();
+        table.date("endDate").nullable();
+        table.decimal("avgShipping", 8, 2).notNullable();
+        table.decimal("dailyAdSpend", 10, 2).notNullable();
+        table.timestamps(true, true);
+      });
+      console.log("✅ Created storeCostHistory table");
+    }
+
     // Run billing setup
     await runBillingSetup();
   } catch (err) {

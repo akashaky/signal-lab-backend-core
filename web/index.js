@@ -7,6 +7,7 @@ import OnboardingController from "./routes/onboarding/onboarding.controller.js";
 import BillingController from "./routes/billing/billing.controller.js";
 import ProductsController from "./routes/products/products.controller.js";
 import AnalyticsController from "./routes/analytics/analytics.controller.js";
+import SettingsController from "./routes/settings/settings.controller.js";
 import cors from "cors";
 import dotenv from "dotenv";
 import { runDbSetup } from "./db/setup.js";
@@ -38,6 +39,7 @@ app.use("/api/onboarding", OnboardingController);
 app.use("/api/billing", BillingController);
 app.use("/api/products", ProductsController);
 app.use("/api/analytics", AnalyticsController);
+app.use("/api/settings", SettingsController);
 
 runDbSetup();
 
