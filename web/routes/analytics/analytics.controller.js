@@ -694,11 +694,10 @@ router.get("/sales", validateJWT, async (req, res) => {
 
     const { start, end, periodDays } = resolveRanges(req.query);
 
-    // Query products with revenue data
+    // Query products with revenue data (group by lineItemTitle since no productShopifyId on line items)
     const [productRows] = await KnexClient.raw(
       `SELECT
-         productShopifyId,
-         productTitle AS name,
+         lineItemTitle AS name,
          SUM(quantity) AS units,
          SUM(CAST(unitPrice AS DECIMAL(12,2)) * quantity) AS gross
        FROM shopifyOrderLineItems
@@ -707,37 +706,37 @@ router.get("/sales", validateJWT, async (req, res) => {
          AND orderCreatedAt < ?
          AND cancelledAt IS NULL
          AND (financialStatus IS NULL OR financialStatus NOT IN ('voided'))
-       GROUP BY productShopifyId, productTitle
+       GROUP BY lineItemTitle
        ORDER BY gross DESC
        LIMIT 20`,
       [store.id, start, end]
     );
 
-    // Query refunds by product
+    // Query refunds by product (join back to order line items to get lineItemTitle)
     const [refundRows] = await KnexClient.raw(
       `SELECT
-         r.productShopifyId,
-         SUM(CAST(r.refundAmount AS DECIMAL(12,2))) AS refunds
-       FROM shopifyRefundLineItems r
-       JOIN shopifyRefunds rf ON rf.refundShopifyId = r.refundShopifyId AND rf.storeId = r.storeId
-       WHERE r.storeId = ?
+         ol.lineItemTitle AS name,
+         SUM(CAST(rl.subtotal AS DECIMAL(12,2))) AS refunds
+       FROM shopifyRefundLineItems rl
+       JOIN shopifyRefunds rf ON rf.refundShopifyId = rl.refundShopifyId AND rf.storeId = rl.storeId
+       JOIN shopifyOrderLineItems ol ON ol.lineItemShopifyId = rl.lineItemShopifyId AND ol.storeId = rl.storeId
+       WHERE rl.storeId = ?
          AND rf.processedAt >= ?
          AND rf.processedAt < ?
-       GROUP BY r.productShopifyId`,
+       GROUP BY ol.lineItemTitle`,
       [store.id, start, end]
     );
 
     const refundMap = new Map();
     for (const r of refundRows) {
-      refundMap.set(r.productShopifyId, parseFloat(r.refunds ?? 0));
+      refundMap.set(r.name, parseFloat(r.refunds ?? 0));
     }
 
     const products = productRows.map((p) => ({
-      productShopifyId: p.productShopifyId,
       name: p.name,
       units: parseInt(p.units),
       gross: Math.round(parseFloat(p.gross)),
-      refunds: Math.round(refundMap.get(p.productShopifyId) ?? 0),
+      refunds: Math.round(refundMap.get(p.name) ?? 0),
     }));
 
     // Query daily revenue for chart
@@ -832,17 +831,16 @@ router.get("/sales", validateJWT, async (req, res) => {
 
     const [topRefundedRows] = await KnexClient.raw(
       `SELECT
-         r.productShopifyId,
-         p.productTitle AS name,
+         ol.lineItemTitle AS name,
          COUNT(*) AS refunds,
-         SUM(CAST(r.refundAmount AS DECIMAL(12,2))) AS amount
-       FROM shopifyRefundLineItems r
-       JOIN shopifyRefunds rf ON rf.refundShopifyId = r.refundShopifyId AND rf.storeId = r.storeId
-       JOIN shopifyOrderLineItems p ON p.productShopifyId = r.productShopifyId AND p.storeId = r.storeId
-       WHERE r.storeId = ?
+         SUM(CAST(rl.subtotal AS DECIMAL(12,2))) AS amount
+       FROM shopifyRefundLineItems rl
+       JOIN shopifyRefunds rf ON rf.refundShopifyId = rl.refundShopifyId AND rf.storeId = rl.storeId
+       JOIN shopifyOrderLineItems ol ON ol.lineItemShopifyId = rl.lineItemShopifyId AND ol.storeId = rl.storeId
+       WHERE rl.storeId = ?
          AND rf.processedAt >= ?
          AND rf.processedAt < ?
-       GROUP BY r.productShopifyId, p.productTitle
+       GROUP BY ol.lineItemTitle
        ORDER BY amount DESC
        LIMIT 5`,
       [store.id, start, end]
@@ -889,8 +887,7 @@ router.get("/product-performance", validateJWT, async (req, res) => {
     const [[productRows], [priorRows], [refundRows]] = await Promise.all([
       KnexClient.raw(
         `SELECT
-           productShopifyId,
-           productTitle AS name,
+           lineItemTitle AS name,
            SUM(quantity) AS units,
            COUNT(DISTINCT orderShopifyId) AS orders,
            SUM(CAST(unitPrice AS DECIMAL(12,2)) * quantity) AS gross
@@ -900,14 +897,14 @@ router.get("/product-performance", validateJWT, async (req, res) => {
            AND orderCreatedAt < ?
            AND cancelledAt IS NULL
            AND (financialStatus IS NULL OR financialStatus NOT IN ('voided'))
-         GROUP BY productShopifyId, productTitle
+         GROUP BY lineItemTitle
          ORDER BY gross DESC
          LIMIT 20`,
         [store.id, start, end]
       ),
       KnexClient.raw(
         `SELECT
-           productShopifyId,
+           lineItemTitle AS name,
            SUM(CAST(unitPrice AS DECIMAL(12,2)) * quantity) AS gross
          FROM shopifyOrderLineItems
          WHERE storeId = ?
@@ -915,33 +912,34 @@ router.get("/product-performance", validateJWT, async (req, res) => {
            AND orderCreatedAt < ?
            AND cancelledAt IS NULL
            AND (financialStatus IS NULL OR financialStatus NOT IN ('voided'))
-         GROUP BY productShopifyId`,
+         GROUP BY lineItemTitle`,
         [store.id, priorStart, priorEnd]
       ),
       KnexClient.raw(
         `SELECT
-           r.productShopifyId,
-           SUM(CAST(r.refundAmount AS DECIMAL(12,2))) AS refunds
-         FROM shopifyRefundLineItems r
-         JOIN shopifyRefunds rf ON rf.refundShopifyId = r.refundShopifyId AND rf.storeId = r.storeId
-         WHERE r.storeId = ?
+           ol.lineItemTitle AS name,
+           SUM(CAST(rl.subtotal AS DECIMAL(12,2))) AS refunds
+         FROM shopifyRefundLineItems rl
+         JOIN shopifyRefunds rf ON rf.refundShopifyId = rl.refundShopifyId AND rf.storeId = rl.storeId
+         JOIN shopifyOrderLineItems ol ON ol.lineItemShopifyId = rl.lineItemShopifyId AND ol.storeId = rl.storeId
+         WHERE rl.storeId = ?
            AND rf.processedAt >= ?
            AND rf.processedAt < ?
-         GROUP BY r.productShopifyId`,
+         GROUP BY ol.lineItemTitle`,
         [store.id, start, end]
       ),
     ]);
 
     const priorMap = new Map();
-    for (const r of priorRows) priorMap.set(r.productShopifyId, parseFloat(r.gross ?? 0));
+    for (const r of priorRows) priorMap.set(r.name, parseFloat(r.gross ?? 0));
 
     const refundMap = new Map();
-    for (const r of refundRows) refundMap.set(r.productShopifyId, parseFloat(r.refunds ?? 0));
+    for (const r of refundRows) refundMap.set(r.name, parseFloat(r.refunds ?? 0));
 
     const products = productRows.map((p) => {
       const gross = parseFloat(p.gross ?? 0);
-      const priorGross = priorMap.get(p.productShopifyId) ?? 0;
-      const refunds = refundMap.get(p.productShopifyId) ?? 0;
+      const priorGross = priorMap.get(p.name) ?? 0;
+      const refunds = refundMap.get(p.name) ?? 0;
       const orders = parseInt(p.orders);
       const units = parseInt(p.units);
       const net = gross - refunds;
@@ -954,7 +952,7 @@ router.get("/product-performance", validateJWT, async (req, res) => {
         : gross > 0 ? 100 : 0;
 
       return {
-        id: p.productShopifyId,
+        id: p.name,
         name: p.name,
         revenue: Math.round(gross),
         orders,
