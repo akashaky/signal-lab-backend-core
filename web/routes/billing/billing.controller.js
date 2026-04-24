@@ -15,7 +15,7 @@ async function createShopifyRecurringCharge(shop, accessToken, planDetails) {
           name: planDetails.name,
           price: planDetails.price,
           trial_days: planDetails.trialDays,
-          test: true, // Test mode in development
+          test: process.env.NODE_ENV !== "production", // Test mode in development
           return_url: `${process.env.HOST}/api/billing/confirm`,
         },
       },
