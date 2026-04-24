@@ -362,7 +362,7 @@ async function registerWebhooks(shop, accessToken) {
     let existing = [];
     try {
       const existingRes = await axios.get(
-        `https://${shop}/admin/api/2025-01/webhooks.json`,
+        `https://${shop}/admin/api/2026-01/webhooks.json`,
         { headers: { "X-Shopify-Access-Token": accessToken } }
       );
       existing = existingRes.data.webhooks.map((w) => w.topic);
@@ -374,7 +374,7 @@ async function registerWebhooks(shop, accessToken) {
       if (existing.includes(topic)) continue;
       try {
         await axios.post(
-          `https://${shop}/admin/api/2025-01/webhooks.json`,
+          `https://${shop}/admin/api/2026-01/webhooks.json`,
           { webhook: { topic, address: endpoint, format: "json" } },
           { headers: { "X-Shopify-Access-Token": accessToken, "Content-Type": "application/json" } }
         );

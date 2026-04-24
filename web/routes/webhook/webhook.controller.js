@@ -31,12 +31,16 @@ router.post("/shopify", express.raw({ type: "application/json" }), async (req, r
       return res.status(400).send("Invalid JSON");
     }
 
-    if (topic === "app/uninstalled" || topic === "customers/data_request" || topic ==="customers/redact" || topic === "shop/redact") {
+    if (topic === "app/uninstalled") {
       await KnexClient("shopifyStore")
         .where("myshopifyDomain", shop)
         .update({ isUninstalled: 1 });
       console.log(`App uninstalled for shop: ${shop}`);
       return res.status(200).send("OK");
+    }
+
+    if( topic === "customers/data_request" || topic ==="customers/redact" || topic === "shop/redact"){
+         return res.status(200).send("OK");
     }
 
     // // Discard products/update and orders/updated events
