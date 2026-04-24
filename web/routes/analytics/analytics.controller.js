@@ -234,7 +234,7 @@ async function queryChartData(storeId, chartStart, chartEnd, chartGranularity, s
          SUM(CAST(ol.unitPrice AS DECIMAL(12,2)) * ol.quantity * COALESCE(vc.cogsPercent, ?) / 100) AS dailyCogs
        FROM shopifyOrderLineItems ol
        LEFT JOIN productVariantCogs vc
-         ON vc.variantShopifyId = ol.variantShopifyId AND vc.storeId = ol.storeId
+         ON vc.variantShopifyId COLLATE utf8mb4_0900_ai_ci = ol.variantShopifyId AND vc.storeId = ol.storeId
        WHERE ol.storeId = ? AND ol.orderCreatedAt >= ? AND ol.orderCreatedAt < ?
          AND ol.cancelledAt IS NULL
          AND (ol.financialStatus IS NULL OR ol.financialStatus NOT IN ('voided'))
@@ -830,7 +830,7 @@ router.get("/sales", validateJWT, async (req, res) => {
            SUM(CAST(ol.unitPrice AS DECIMAL(12,2)) * ol.quantity * COALESCE(vc.cogsPercent, ?) / 100) AS dailyCogs
          FROM shopifyOrderLineItems ol
          LEFT JOIN productVariantCogs vc
-           ON vc.variantShopifyId = ol.variantShopifyId AND vc.storeId = ol.storeId
+           ON vc.variantShopifyId COLLATE utf8mb4_0900_ai_ci = ol.variantShopifyId AND vc.storeId = ol.storeId
          WHERE ol.storeId = ? AND ol.orderCreatedAt >= ? AND ol.orderCreatedAt < ?
            AND ol.cancelledAt IS NULL
            AND (ol.financialStatus IS NULL OR ol.financialStatus NOT IN ('voided'))
@@ -969,7 +969,7 @@ router.get("/product-performance", validateJWT, async (req, res) => {
            SUM(CAST(ol.unitPrice AS DECIMAL(12,2)) * ol.quantity * COALESCE(vc.cogsPercent, ?) / 100) AS cogsAmount
          FROM shopifyOrderLineItems ol
          LEFT JOIN productVariantCogs vc
-           ON vc.variantShopifyId = ol.variantShopifyId AND vc.storeId = ol.storeId
+           ON vc.variantShopifyId COLLATE utf8mb4_0900_ai_ci = ol.variantShopifyId AND vc.storeId = ol.storeId
          WHERE ol.storeId = ?
            AND ol.orderCreatedAt >= ?
            AND ol.orderCreatedAt < ?

@@ -40,7 +40,7 @@ export async function runDbSetup() {
     if (!hasVariantCogs) {
       await KnexClient.schema.createTable("productVariantCogs", (table) => {
         table.increments("id").primary();
-        table.string("variantShopifyId", 255).notNullable();
+        table.string("variantShopifyId", 255).notNullable().collate("utf8mb4_0900_ai_ci");
         table.integer("storeId").unsigned().notNullable();
         table.foreign("storeId").references("id").inTable("shopifyStore");
         table.decimal("cogsPercent", 5, 2).notNullable();
