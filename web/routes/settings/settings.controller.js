@@ -1,8 +1,12 @@
 import express from "express";
 import validateJWT from "../../middleware/validateUserToken.js";
+import validateSubscription from "../../middleware/validateSubscription.js";
 import KnexClient from "../../knex.js";
 
 const router = express.Router();
+
+// All settings routes require a valid JWT and active subscription/trial
+router.use(validateJWT, validateSubscription);
 
 async function getStore(shop) {
   return KnexClient("shopifyStore").where("myshopifyDomain", shop).first();

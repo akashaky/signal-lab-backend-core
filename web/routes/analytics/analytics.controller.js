@@ -1,8 +1,12 @@
 import express from "express";
 import validateJWT from "../../middleware/validateUserToken.js";
+import validateSubscription from "../../middleware/validateSubscription.js";
 import KnexClient from "../../knex.js";
 
 const router = express.Router();
+
+// All analytics routes require a valid JWT and active subscription/trial
+router.use(validateJWT, validateSubscription);
 
 async function getStoreAndSettings(shop) {
   const store = await KnexClient("shopifyStore")
@@ -114,6 +118,26 @@ async function queryRevenue(storeId, start, end) {
     discounts: parseFloat(rows[0]?.discounts ?? 0),
     orderCount: parseInt(rows[0]?.orderCount ?? 0),
   };
+}
+
+async function queryCogs(storeId, start, end, defaultCogsPct) {
+  const [rows] = await KnexClient.raw(
+    `SELECT COALESCE(SUM(
+       CAST(ol.unitPrice AS DECIMAL(12,2)) * ol.quantity
+       * COALESCE(vc.cogsPercent, ?) / 100
+     ), 0) AS totalCogs
+     FROM shopifyOrderLineItems ol
+     LEFT JOIN productVariantCogs vc
+       ON vc.variantShopifyId COLLATE utf8mb4_0900_ai_ci = ol.variantShopifyId
+       AND vc.storeId = ol.storeId
+     WHERE ol.storeId = ?
+       AND ol.orderCreatedAt >= ?
+       AND ol.orderCreatedAt < ?
+       AND ol.cancelledAt IS NULL
+       AND (ol.financialStatus IS NULL OR ol.financialStatus NOT IN ('voided'))`,
+    [defaultCogsPct, storeId, start, end]
+  );
+  return parseFloat(rows[0]?.totalCogs ?? 0);
 }
 
 async function queryRefunds(storeId, start, end) {
@@ -576,24 +600,45 @@ router.get("/pnl", validateJWT, async (req, res) => {
     if (!store) return res.status(404).json({ error: "Store not found" });
 
     const { start, end, priorStart, priorEnd, periodDays } = resolveRanges(req.query);
-    const [history, current, prior, refunds, refundsPrior] = await Promise.all([
+    const defaultCogsPct = settings ? parseFloat(settings.cogsPercent) : 30;
+    const avgShipping    = settings ? parseFloat(settings.avgShipping)  : 4.50;
+
+    const [history, current, prior, refunds, refundsPrior, cogs, cogsPrior] = await Promise.all([
       getStoreCostHistory(store.id),
       queryRevenue(store.id, start, end),
       queryRevenue(store.id, priorStart, priorEnd),
       queryRefunds(store.id, start, end),
       queryRefunds(store.id, priorStart, priorEnd),
+      queryCogs(store.id, start, end, defaultCogsPct),
+      queryCogs(store.id, priorStart, priorEnd, defaultCogsPct),
     ]);
 
+    const adSpend      = sumAdSpendForPeriod(history, settings, start, periodDays);
+    const adSpendPrior = sumAdSpendForPeriod(history, settings, priorStart, periodDays);
+    const shipping      = current.orderCount * avgShipping;
+    const shippingPrior = prior.orderCount   * avgShipping;
+
+    const netRevenue      = current.grossRevenue - current.discounts - refunds;
+    const netRevenuePrior = prior.grossRevenue   - prior.discounts   - refundsPrior;
+    const netProfit      = Math.round(netRevenue      - adSpend      - cogs      - shipping);
+    const netProfitPrior = Math.round(netRevenuePrior - adSpendPrior - cogsPrior - shippingPrior);
+
     return res.json({
-      grossRevenue: current.grossRevenue,
+      grossRevenue:      current.grossRevenue,
       grossRevenuePrior: prior.grossRevenue,
-      discounts: current.discounts,
-      discountsPrior: prior.discounts,
+      discounts:         current.discounts,
+      discountsPrior:    prior.discounts,
       refunds,
       refundsPrior,
-      adSpend: sumAdSpendForPeriod(history, settings, start, periodDays),
-      adSpendPrior: sumAdSpendForPeriod(history, settings, priorStart, periodDays),
-      orders: current.orderCount,
+      adSpend,
+      adSpendPrior,
+      cogs:         Math.round(cogs),
+      cogsPrior:    Math.round(cogsPrior),
+      shipping:     Math.round(shipping),
+      shippingPrior: Math.round(shippingPrior),
+      netProfit,
+      netProfitPrior,
+      orders:      current.orderCount,
       ordersPrior: prior.orderCount,
     });
   } catch (err) {

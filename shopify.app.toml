@@ -1,7 +1,7 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
 client_id = "2bb12a44c83663a69b3fd077226c75ab"
-name = "dev-rev-signal"
+name = "Rev signal: Profit analytics"
 application_url = "https://dev-api.revsignallab.com/api/store"
 embedded = false
 handle = "dev-rev-signal"
@@ -14,7 +14,7 @@ api_version = "2025-04"
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = "read_orders,read_products,write_products,read_customers,write_customers"
+scopes = "read_orders,read_products,read_customers"
 
 [auth]
 redirect_urls = [

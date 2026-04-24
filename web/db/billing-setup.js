@@ -9,7 +9,7 @@ export async function runBillingSetup() {
         table.increments("id").primary();
         table.string("name", 50).notNullable();
         table.integer("priceInCents").notNullable(); // 1900 for $19.00
-        table.integer("trialDays").notNullable().defaultTo(21);
+        table.integer("trialDays").notNullable().defaultTo(14);
         table.text("features").nullable(); // JSON string
         table.tinyint("isActive").notNullable().defaultTo(1);
         table.timestamps(true, true);
@@ -19,8 +19,8 @@ export async function runBillingSetup() {
       // Insert default plan
       await KnexClient("subscription_plans").insert({
         name: "Pro Plan",
-        priceInCents: 1900,
-        trialDays: 21,
+        priceInCents: 2900,
+        trialDays: 14,
         features: JSON.stringify([
           "Full analytics access",
           "Unlimited products",
@@ -30,6 +30,11 @@ export async function runBillingSetup() {
         isActive: 1
       });
       console.log("✅ Inserted default Pro Plan");
+    } else {
+      // Ensure existing plan has correct values
+      await KnexClient("subscription_plans")
+        .where("isActive", 1)
+        .update({ trialDays: 14, priceInCents: 2900 });
     }
 
     // Create subscriptions table

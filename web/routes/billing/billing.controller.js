@@ -15,7 +15,7 @@ async function createShopifyRecurringCharge(shop, accessToken, planDetails) {
           name: planDetails.name,
           price: planDetails.price,
           trial_days: planDetails.trialDays,
-          test: process.env.NODE_ENV !== "production", // Test mode in development
+          test: true, // Test mode in development
           return_url: `${process.env.HOST}/api/billing/confirm`,
         },
       },
@@ -140,16 +140,28 @@ router.get("/status", validateJWT, async (req, res) => {
         );
 
         // Update local status based on Shopify status
+        // Shopify marks a charge "active" once merchant approves — but if the trial
+        // period hasn't ended yet, our local status stays "trial".
         const statusMap = {
           pending: "trial",
-          active: "active",
           declined: "cancelled",
           expired: "expired",
           frozen: "past_due",
           cancelled: "cancelled"
         };
 
-        const newStatus = statusMap[shopifyCharge.status] || subscription.status;
+        const now = new Date();
+        const shopifyTrialEnd = shopifyCharge.trial_ends_on ? new Date(shopifyCharge.trial_ends_on) : null;
+        const localTrialEnd = subscription.trialEndsAt ? new Date(subscription.trialEndsAt) : null;
+        const trialEnd = shopifyTrialEnd || localTrialEnd;
+        const stillInTrial = trialEnd && now < trialEnd;
+
+        let newStatus;
+        if (shopifyCharge.status === "active") {
+          newStatus = stillInTrial ? "trial" : "active";
+        } else {
+          newStatus = statusMap[shopifyCharge.status] || subscription.status;
+        }
         if (newStatus !== subscription.status) {
           await KnexClient("subscriptions")
             .where("id", subscription.id)
@@ -364,34 +376,54 @@ router.get("/confirm", async (req, res) => {
 
       if (subscription) {
         const now = new Date();
-        const periodEnd = new Date(now);
-        periodEnd.setMonth(periodEnd.getMonth() + 1);
-
-        await KnexClient("subscriptions")
-          .where("id", subscription.id)
-          .update({
-            status: "active",
-            currentPeriodStart: now,
-            currentPeriodEnd: periodEnd
-          });
-
-        // Log event
+        const trialEnd = subscription.trialEndsAt ? new Date(subscription.trialEndsAt) : null;
+        const stillInTrial = trialEnd && now < trialEnd;
         const plan = await KnexClient("subscription_plans")
           .where("id", subscription.planId)
           .first();
 
-        await KnexClient("billing_events").insert({
-          storeId: store.id,
-          subscriptionId: subscription.id,
-          type: "subscription_created",
-          amountInCents: plan.priceInCents,
-          metadata: JSON.stringify({
-            planId: plan.id,
-            shopifyChargeId: charge_id,
-            periodStart: now,
-            periodEnd: periodEnd
-          })
-        });
+        if (stillInTrial) {
+          // Merchant approved the charge but trial is still running — stay in trial
+          await KnexClient("subscriptions")
+            .where("id", subscription.id)
+            .update({ status: "trial" });
+
+          await KnexClient("billing_events").insert({
+            storeId: store.id,
+            subscriptionId: subscription.id,
+            type: "trial_started",
+            metadata: JSON.stringify({
+              planId: plan.id,
+              shopifyChargeId: charge_id,
+              trialEndsAt: trialEnd
+            })
+          });
+        } else {
+          // No trial or trial already ended — activate billing immediately
+          const periodEnd = new Date(now);
+          periodEnd.setMonth(periodEnd.getMonth() + 1);
+
+          await KnexClient("subscriptions")
+            .where("id", subscription.id)
+            .update({
+              status: "active",
+              currentPeriodStart: now,
+              currentPeriodEnd: periodEnd
+            });
+
+          await KnexClient("billing_events").insert({
+            storeId: store.id,
+            subscriptionId: subscription.id,
+            type: "subscription_created",
+            amountInCents: plan.priceInCents,
+            metadata: JSON.stringify({
+              planId: plan.id,
+              shopifyChargeId: charge_id,
+              periodStart: now,
+              periodEnd: periodEnd
+            })
+          });
+        }
       }
     }
 
