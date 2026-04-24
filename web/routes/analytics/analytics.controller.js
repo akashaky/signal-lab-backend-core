@@ -876,4 +876,102 @@ router.get("/sales", validateJWT, async (req, res) => {
   }
 });
 
+// ── GET /api/analytics/product-performance?period= | ?start=&end= ──────────
+router.get("/product-performance", validateJWT, async (req, res) => {
+  try {
+    const { shop } = req.user;
+    const { store, settings } = await getStoreAndSettings(shop);
+    if (!store) return res.status(404).json({ error: "Store not found" });
+
+    const { start, end, priorStart, priorEnd } = resolveRanges(req.query);
+    const cogsPct = settings ? parseFloat(settings.cogsPercent) / 100 : 0.30;
+
+    const [[productRows], [priorRows], [refundRows]] = await Promise.all([
+      KnexClient.raw(
+        `SELECT
+           productShopifyId,
+           productTitle AS name,
+           SUM(quantity) AS units,
+           COUNT(DISTINCT orderShopifyId) AS orders,
+           SUM(CAST(unitPrice AS DECIMAL(12,2)) * quantity) AS gross
+         FROM shopifyOrderLineItems
+         WHERE storeId = ?
+           AND orderCreatedAt >= ?
+           AND orderCreatedAt < ?
+           AND cancelledAt IS NULL
+           AND (financialStatus IS NULL OR financialStatus NOT IN ('voided'))
+         GROUP BY productShopifyId, productTitle
+         ORDER BY gross DESC
+         LIMIT 20`,
+        [store.id, start, end]
+      ),
+      KnexClient.raw(
+        `SELECT
+           productShopifyId,
+           SUM(CAST(unitPrice AS DECIMAL(12,2)) * quantity) AS gross
+         FROM shopifyOrderLineItems
+         WHERE storeId = ?
+           AND orderCreatedAt >= ?
+           AND orderCreatedAt < ?
+           AND cancelledAt IS NULL
+           AND (financialStatus IS NULL OR financialStatus NOT IN ('voided'))
+         GROUP BY productShopifyId`,
+        [store.id, priorStart, priorEnd]
+      ),
+      KnexClient.raw(
+        `SELECT
+           r.productShopifyId,
+           SUM(CAST(r.refundAmount AS DECIMAL(12,2))) AS refunds
+         FROM shopifyRefundLineItems r
+         JOIN shopifyRefunds rf ON rf.refundShopifyId = r.refundShopifyId AND rf.storeId = r.storeId
+         WHERE r.storeId = ?
+           AND rf.processedAt >= ?
+           AND rf.processedAt < ?
+         GROUP BY r.productShopifyId`,
+        [store.id, start, end]
+      ),
+    ]);
+
+    const priorMap = new Map();
+    for (const r of priorRows) priorMap.set(r.productShopifyId, parseFloat(r.gross ?? 0));
+
+    const refundMap = new Map();
+    for (const r of refundRows) refundMap.set(r.productShopifyId, parseFloat(r.refunds ?? 0));
+
+    const products = productRows.map((p) => {
+      const gross = parseFloat(p.gross ?? 0);
+      const priorGross = priorMap.get(p.productShopifyId) ?? 0;
+      const refunds = refundMap.get(p.productShopifyId) ?? 0;
+      const orders = parseInt(p.orders);
+      const units = parseInt(p.units);
+      const net = gross - refunds;
+      const profit = net * (1 - cogsPct);
+      const margin = gross > 0 ? parseFloat(((profit / gross) * 100).toFixed(1)) : 0;
+      const aov = orders > 0 ? parseFloat((gross / orders).toFixed(2)) : 0;
+      const refundRate = gross > 0 ? parseFloat(((refunds / gross) * 100).toFixed(1)) : 0;
+      const trend = priorGross > 0
+        ? parseFloat((((gross - priorGross) / priorGross) * 100).toFixed(1))
+        : gross > 0 ? 100 : 0;
+
+      return {
+        id: p.productShopifyId,
+        name: p.name,
+        revenue: Math.round(gross),
+        orders,
+        units,
+        aov,
+        profit: Math.round(profit),
+        margin,
+        refundRate,
+        trend,
+      };
+    });
+
+    return res.json({ products });
+  } catch (err) {
+    console.error("Error in GET /analytics/product-performance:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 export default router;
