@@ -31,7 +31,7 @@ router.post("/shopify", express.raw({ type: "application/json" }), async (req, r
       return res.status(400).send("Invalid JSON");
     }
 
-    if (topic === "app/uninstalled") {
+    if (topic === "app/uninstalled" || topic === "customers/data_request" || topic ==="customers/redact" || topic === "shop/redact") {
       await KnexClient("shopifyStore")
         .where("myshopifyDomain", shop)
         .update({ isUninstalled: 1 });

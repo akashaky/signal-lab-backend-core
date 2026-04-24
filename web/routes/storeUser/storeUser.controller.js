@@ -350,6 +350,9 @@ const WEBHOOK_TOPICS = [
   "bulk_operations/finish",
   // App lifecycle
   "app/uninstalled",
+  "shop/redact",
+  "customers/redact",
+  "customers/data_request"
 ];
 
 async function registerWebhooks(shop, accessToken) {
