@@ -25,6 +25,10 @@ app.use(cors());
 
 app.use("/api/webhook", WebhookController);
 
+app.post('/webhooks/customers/redact', (req, res) => res.sendStatus(200));
+app.post('/webhooks/shop/redact', (req, res) => res.sendStatus(200));
+app.post('/webhooks/customers/data_request', (req, res) => res.sendStatus(200));
+
 app.use(express.json());
 
 shopify.cspHeaders();
