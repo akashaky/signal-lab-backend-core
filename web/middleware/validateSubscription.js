@@ -19,7 +19,7 @@ async function validateSubscription(req, res, next) {
     // Get active subscription
     const subscription = await KnexClient("subscriptions")
       .where("storeId", store.id)
-      .whereIn("status", ["trial", "active"])
+      .whereIn("status", ["free", "trial", "active"])
       .first();
 
     if (!subscription) {

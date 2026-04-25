@@ -37,6 +37,19 @@ export async function runBillingSetup() {
         .update({ trialDays: 14, priceInCents: 2900 });
     }
 
+    // Ensure Free Plan exists
+    const freePlan = await KnexClient("subscription_plans").where("name", "Free Plan").first();
+    if (!freePlan) {
+      await KnexClient("subscription_plans").insert({
+        name: "Free Plan",
+        priceInCents: 0,
+        trialDays: 0,
+        features: JSON.stringify(["Basic analytics access"]),
+        isActive: 1,
+      });
+      console.log("✅ Inserted Free Plan");
+    }
+
     // Create subscriptions table
     const hasSubscriptions = await KnexClient.schema.hasTable("subscriptions");
     if (!hasSubscriptions) {
@@ -46,7 +59,7 @@ export async function runBillingSetup() {
         table.foreign("storeId").references("id").inTable("shopifyStore");
         table.integer("planId").unsigned().notNullable();
         table.foreign("planId").references("id").inTable("subscription_plans");
-        table.enum("status", ["trial", "active", "cancelled", "expired", "past_due"]).notNullable().defaultTo("trial");
+        table.enum("status", ["free", "trial", "active", "cancelled", "expired", "past_due"]).notNullable().defaultTo("free");
         table.timestamp("trialStartedAt").nullable();
         table.timestamp("trialEndsAt").nullable();
         table.timestamp("currentPeriodStart").nullable();
@@ -60,6 +73,11 @@ export async function runBillingSetup() {
         table.index("shopifyChargeId");
       });
       console.log("✅ Created subscriptions table");
+    } else {
+      // Migrate: add 'free' to the status enum if not already present
+      await KnexClient.raw(
+        "ALTER TABLE subscriptions MODIFY COLUMN status ENUM('free', 'trial', 'active', 'cancelled', 'expired', 'past_due') NOT NULL DEFAULT 'free'"
+      );
     }
 
     // Create billing_events table

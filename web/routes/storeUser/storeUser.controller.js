@@ -68,6 +68,7 @@ router.get("/auth", async (req, res) => {
       storeId = id;
       await registerWebhooks(shop, accessToken);
       triggerBulkOperation(shop, accessToken, storeId);
+      await assignFreePlan(storeId);
     }
 
     const accessTokenData = await getAccessTokenByStoreId(storeId);
@@ -576,6 +577,28 @@ export async function triggerSingleBulkOperation(shop, accessToken, storeId, typ
     }
   } catch (err) {
     console.error(`Unexpected error in triggerBulkOperation (${type}):`, err);
+  }
+}
+
+async function assignFreePlan(storeId) {
+  try {
+    const existing = await KnexClient("subscriptions").where("storeId", storeId).first();
+    if (existing) return;
+
+    const freePlan = await KnexClient("subscription_plans").where("name", "Free Plan").first();
+    if (!freePlan) {
+      console.error("Free Plan not found in subscription_plans");
+      return;
+    }
+
+    await KnexClient("subscriptions").insert({
+      storeId,
+      planId: freePlan.id,
+      status: "free",
+    });
+    console.log(`Free plan assigned to store ${storeId}`);
+  } catch (err) {
+    console.error("Error assigning free plan:", err);
   }
 }
 
